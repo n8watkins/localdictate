@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Archive,
   CheckCircle2,
@@ -135,6 +135,13 @@ const models = [
     progress: 100,
   },
   {
+    name: "medium.en quantized",
+    id: "medium.en-q5_0",
+    size: "514 MB",
+    status: "Downloading",
+    progress: 42,
+  },
+  {
     name: "large-v3-turbo quantized",
     id: "large-v3-turbo-q5_0",
     size: "1.6 GB",
@@ -251,53 +258,38 @@ function DashboardView({
   return (
     <>
       <section className="status-grid" aria-label="Current setup">
-        <article className="metric-card recording-card">
-          <div className="card-header">
-            <span>
-              <Gauge aria-hidden="true" size={15} />
-              Current Status
-            </span>
-            <span className="pill ready">Ready</span>
-          </div>
-          <Waveform />
-          <p className="muted">Waiting for hold-to-talk or toggle dictation.</p>
-        </article>
-
-        <article className="metric-card">
-          <div className="card-header">
-            <span>
-              <Mic aria-hidden="true" size={15} />
-              Active Microphone
-            </span>
-            <span className="status-dot success" />
-          </div>
-          <strong>Default communications device</strong>
-          <p className="muted">Input level meter and selector wire in during Phase 2.</p>
-        </article>
-
-        <article className="metric-card">
-          <div className="card-header">
-            <span>
-              <Database aria-hidden="true" size={15} />
-              Active Whisper Model
-            </span>
-            <span className="pill selected">Selected</span>
-          </div>
-          <strong>small.en quantized</strong>
-          <p className="muted">Model manager will download to app data storage.</p>
-        </article>
-
-        <article className="metric-card">
-          <div className="card-header">
-            <span>
-              <Clipboard aria-hidden="true" size={15} />
-              Output Mode
-            </span>
-            <span className="pill preserve">Clipboard Untouched</span>
-          </div>
-          <strong>Save Only</strong>
-          <p className="muted">Paste last transcript stays separate from the clipboard.</p>
-        </article>
+        <StatusCard
+          action="Record"
+          Icon={Gauge}
+          label="Current status"
+          onAction={() => setActiveView("Transcribe")}
+          status={<span className="pill ready">Ready</span>}
+          value="Idle"
+        />
+        <StatusCard
+          action="Choose"
+          Icon={Mic}
+          label="Active microphone"
+          onAction={() => setActiveView("Audio")}
+          status={<span className="status-dot success" />}
+          value="Default communications device"
+        />
+        <StatusCard
+          action="Manage"
+          Icon={Database}
+          label="Active model"
+          onAction={() => setActiveView("Models")}
+          status={<span className="pill selected">Selected</span>}
+          value="small.en quantized"
+        />
+        <StatusCard
+          action="Change"
+          Icon={Clipboard}
+          label="Output mode"
+          onAction={() => setActiveView("Settings")}
+          status={<span className="pill preserve">Clipboard Untouched</span>}
+          value="Save Only"
+        />
       </section>
 
       <section className="main-grid">
@@ -381,22 +373,10 @@ function TranscribeView() {
           <div className="section-heading compact">
             <h2>Paste method</h2>
           </div>
-          <div className="choice-list">
-            <label className="choice-row selected-choice">
-              <input defaultChecked name="paste-method" type="radio" />
-              <span>
-                <strong>Direct Insert</strong>
-                <small>Preserve the clipboard by default.</small>
-              </span>
-            </label>
-            <label className="choice-row">
-              <input name="paste-method" type="radio" />
-              <span>
-                <strong>Compatibility Paste</strong>
-                <small>Temporarily use clipboard, then restore it.</small>
-              </span>
-            </label>
-          </div>
+          <SegmentedControl
+            options={["Direct Insert", "Compatibility Paste"]}
+            selected="Direct Insert"
+          />
         </article>
 
         <LastTranscriptCard compact />
@@ -435,24 +415,7 @@ function HistoryView() {
         </div>
         <div className="transcript-list">
           {recentTranscripts.map((item) => (
-            <div className="history-row" key={item.title}>
-              <div>
-                <strong>{item.title}</strong>
-                <p>{item.text}</p>
-                <span>{item.meta}</span>
-              </div>
-              <div className="row-actions">
-                <span className="pill preserve">{item.output}</span>
-                <button className="ghost-button" type="button">
-                  <ClipboardPaste aria-hidden="true" size={15} />
-                  Insert
-                </button>
-                <button className="ghost-button" type="button">
-                  <Copy aria-hidden="true" size={15} />
-                  Copy
-                </button>
-              </div>
-            </div>
+            <TranscriptRow item={item} key={item.title} variant="full" />
           ))}
         </div>
       </article>
@@ -463,60 +426,72 @@ function HistoryView() {
 function SettingsView() {
   return (
     <section className="view-grid">
-      <SettingsPanel
-        title="Privacy defaults"
-        rows={[
-          ["Cloud transcription", "Not present"],
-          ["Save transcript history", "Enabled"],
-          ["Save raw audio", "Disabled"],
-          ["Telemetry", "Disabled"],
-        ]}
-      />
-      <SettingsPanel
-        title="Feedback"
-        rows={[
-          ["Floating recording pill", "Enabled"],
-          ["Native notifications", "Enabled"],
-          ["Start/stop sounds", "Disabled"],
-          ["Minimize to tray", "Enabled"],
-        ]}
-      />
-      <article className="panel-card">
-        <div className="section-heading compact">
-          <h2>Recording rules</h2>
-          <SlidersHorizontal aria-hidden="true" size={16} />
-        </div>
-        <div className="control-grid">
-          <label>
-            Recording mode
-            <select defaultValue="both">
-              <option value="hold">Hold-to-talk</option>
-              <option value="toggle">Toggle start/stop</option>
-              <option value="both">Both enabled</option>
-            </select>
-          </label>
-          <label>
-            Minimum duration
-            <input defaultValue="300 ms" />
-          </label>
-          <label>
-            Maximum duration
-            <input defaultValue="3 minutes" />
-          </label>
-          <label>
-            Language
-            <select defaultValue="en">
-              <option value="auto">Auto detect</option>
-              <option value="en">English</option>
-            </select>
-          </label>
-        </div>
-      </article>
-      <article className="panel-card">
-        <div className="section-heading compact">
-          <h2>Data controls</h2>
-          <MonitorCog aria-hidden="true" size={16} />
-        </div>
+      <SectionPanel icon={<ShieldCheck aria-hidden="true" size={16} />} title="Privacy defaults">
+        <SettingRow
+          description="Keep searchable local transcript records."
+          label="History enabled"
+        >
+          <Toggle defaultOn label="History enabled" />
+        </SettingRow>
+        <SettingRow
+          description="Store source clips beside transcript metadata."
+          label="Save raw audio clips"
+        >
+          <Toggle label="Save raw audio clips" />
+        </SettingRow>
+        <SettingRow description="Automatically delete old history." label="Retention">
+          <select defaultValue="30">
+            <option value="7">7 days</option>
+            <option value="30">30 days</option>
+            <option value="90">90 days</option>
+            <option value="forever">Forever</option>
+          </select>
+        </SettingRow>
+        <SettingRow description="Speech recognition language preference." label="Language">
+          <select defaultValue="en">
+            <option value="auto">Auto detect</option>
+            <option value="en">English</option>
+          </select>
+        </SettingRow>
+      </SectionPanel>
+
+      <SectionPanel icon={<MonitorCog aria-hidden="true" size={16} />} title="App behavior">
+        <SettingRow description="Start LocalDictate when Windows starts." label="Launch at startup">
+          <Toggle defaultOn label="Launch at startup" />
+        </SettingRow>
+        <SettingRow description="Keep the app available from the system tray." label="Minimize to tray">
+          <Toggle defaultOn label="Minimize to tray" />
+        </SettingRow>
+        <SettingRow description="Show capture state near the cursor." label="Show floating pill">
+          <Toggle defaultOn label="Show floating pill" />
+        </SettingRow>
+        <SettingRow description="Display completion and failure notices." label="Notifications">
+          <Toggle defaultOn label="Notifications" />
+        </SettingRow>
+        <SettingRow description="Play start and stop capture tones." label="Sounds">
+          <Toggle label="Sounds" />
+        </SettingRow>
+      </SectionPanel>
+
+      <SectionPanel icon={<SlidersHorizontal aria-hidden="true" size={16} />} title="Recording rules">
+        <SettingRow description="Choose which global capture modes are active." label="Recording mode">
+          <SegmentedControl
+            options={["Hold", "Toggle", "Both"]}
+            selected="Both"
+          />
+        </SettingRow>
+        <SettingRow description="Trim leading and trailing quiet segments." label="Silence trim">
+          <Toggle defaultOn label="Silence trim" />
+        </SettingRow>
+        <SettingRow description="Ignore accidental taps shorter than this." label="Minimum duration">
+          <input defaultValue="300 ms" />
+        </SettingRow>
+        <SettingRow description="Stop long recordings automatically." label="Maximum duration">
+          <input defaultValue="3 minutes" />
+        </SettingRow>
+      </SectionPanel>
+
+      <SectionPanel icon={<MonitorCog aria-hidden="true" size={16} />} title="Data controls">
         <div className="button-column">
           <button className="secondary-button" type="button">
             <FolderOpen aria-hidden="true" size={15} />
@@ -531,7 +506,7 @@ function SettingsView() {
             Reset all settings
           </button>
         </div>
-      </article>
+      </SectionPanel>
     </section>
   );
 }
@@ -550,9 +525,10 @@ function HotkeysView() {
             <div className="hotkey-editor-row" key={hotkey.label}>
               <div>
                 <strong>{hotkey.label}</strong>
-                <span>{hotkey.status}</span>
+                <span>Registered globally</span>
               </div>
               <kbd>{hotkey.value}</kbd>
+              <span className="pill ready">{hotkey.status}</span>
               <button className="secondary-button" type="button">
                 <Keyboard aria-hidden="true" size={15} />
                 Rebind
@@ -576,10 +552,10 @@ function HotkeysView() {
         <div className="section-heading compact">
           <h2>Conflict handling</h2>
         </div>
-        <p className="muted">
-          Registration failures will preserve the previous shortcut and show a
-          specific conflict message once the backend hotkey service is wired.
-        </p>
+        <div className="conflict-panel">
+          <CheckCircle2 aria-hidden="true" size={16} />
+          <span>No shortcut conflicts detected.</span>
+        </div>
       </article>
     </section>
   );
@@ -596,18 +572,23 @@ function ModelsView() {
             Open model folder
           </button>
         </div>
-        <div className="model-list">
+        <div className="model-table">
+          <div className="model-table-header" aria-hidden="true">
+            <span>Model</span>
+            <span>Size</span>
+            <span>Status</span>
+            <span>Action</span>
+          </div>
           {models.map((model) => (
             <div className="model-row" key={model.id}>
               <div>
                 <strong>{model.name}</strong>
-                <span>
-                  {model.id} | {model.size}
-                </span>
+                <span>{model.id}</span>
                 <div className="progress-track">
                   <div style={{ width: `${model.progress}%` }} />
                 </div>
               </div>
+              <span>{model.size}</span>
               <span
                 className={
                   model.status === "Selected" ? "pill selected" : "pill preserve"
@@ -615,14 +596,31 @@ function ModelsView() {
               >
                 {model.status}
               </span>
-              <button className="secondary-button" type="button">
+              <div className="row-actions">
+                {model.progress === 0 ? (
+                  <button className="secondary-button" type="button">
+                    <Download aria-hidden="true" size={15} />
+                    Download
+                  </button>
+                ) : null}
+                {model.progress > 0 && model.progress < 100 ? (
+                  <button className="secondary-button" type="button">
+                    <Square aria-hidden="true" size={15} />
+                    Cancel
+                  </button>
+                ) : null}
                 {model.progress === 100 ? (
-                  <CheckCircle2 aria-hidden="true" size={15} />
-                ) : (
-                  <Download aria-hidden="true" size={15} />
-                )}
-                {model.progress === 100 ? "Select" : "Download"}
-              </button>
+                  <button className="secondary-button" type="button">
+                    <CheckCircle2 aria-hidden="true" size={15} />
+                    Select
+                  </button>
+                ) : null}
+                {model.progress === 100 ? (
+                  <IconButton danger label="Delete">
+                    <Trash2 aria-hidden="true" size={15} />
+                  </IconButton>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
@@ -643,7 +641,12 @@ function ModelsView() {
           <h2>Storage</h2>
         </div>
         <code>%APPDATA%/LocalDictate/models/</code>
-        <p className="muted">Downloads stay local and can be deleted anytime.</p>
+        <div className="button-row">
+          <button className="secondary-button" type="button">
+            <FolderOpen aria-hidden="true" size={15} />
+            Open folder
+          </button>
+        </div>
       </article>
     </section>
   );
@@ -694,15 +697,26 @@ function AudioView() {
       </article>
 
       <div className="stack">
-        <SettingsPanel
-          title="Audio processing"
-          rows={[
-            ["Silence trim", "Enabled"],
-            ["Minimum duration", "300 ms"],
-            ["Maximum duration", "3 minutes"],
-            ["Raw audio history", "Disabled"],
-          ]}
-        />
+        <SectionPanel title="Audio processing">
+          <SettingRow description="Remove quiet space around speech." label="Silence trim">
+            <Toggle defaultOn label="Silence trim" />
+          </SettingRow>
+          <SettingRow description="Ignore captures below this length." label="Minimum duration">
+            <input defaultValue="300 ms" />
+          </SettingRow>
+          <SettingRow description="Cap single dictation sessions." label="Maximum duration">
+            <input defaultValue="3 minutes" />
+          </SettingRow>
+          <SettingRow description="Preferred file shape for transcription." label="Target format">
+            <select defaultValue="wav">
+              <option value="wav">16 kHz mono PCM WAV</option>
+              <option value="flac">16 kHz mono FLAC</option>
+            </select>
+          </SettingRow>
+          <SettingRow description="Keep original clips for review." label="Save raw audio">
+            <Toggle label="Save raw audio" />
+          </SettingRow>
+        </SectionPanel>
         <article className="panel-card">
           <div className="section-heading compact">
             <h2>Device health</h2>
@@ -737,24 +751,29 @@ function AboutView() {
         </p>
       </article>
 
-      <SettingsPanel
-        title="V1 boundaries"
-        rows={[
-          ["Cloud transcription", "Non-goal"],
-          ["Wake word", "Non-goal"],
-          ["Realtime streaming", "Non-goal"],
-          ["Command mode", "Non-goal"],
-        ]}
-      />
-      <SettingsPanel
-        title="Build phases"
-        rows={[
-          ["Current", "Skeleton app"],
-          ["Next", "State, tray, settings"],
-          ["Then", "Hotkeys and recording"],
-          ["After", "Whisper and paste"],
-        ]}
-      />
+      <SectionPanel title="App details">
+        <SettingRow description="Current packaged application version." label="Version">
+          <strong>0.1.0</strong>
+        </SettingRow>
+        <SettingRow description="Transcription runs locally after model download." label="Privacy">
+          <span className="pill preserve">Local-first</span>
+        </SettingRow>
+        <SettingRow description="Default location for app data and models." label="Local data path">
+          <code>%APPDATA%/LocalDictate/</code>
+        </SettingRow>
+      </SectionPanel>
+      <SectionPanel title="Resources">
+        <div className="button-column">
+          <button className="secondary-button" type="button">
+            <FolderOpen aria-hidden="true" size={15} />
+            Open docs
+          </button>
+          <button className="secondary-button" type="button">
+            <Archive aria-hidden="true" size={15} />
+            View licenses
+          </button>
+        </div>
+      </SectionPanel>
     </section>
   );
 }
@@ -824,14 +843,8 @@ function RecentTranscriptsCard({
         </button>
       </div>
       <div className="transcript-list">
-        {recentTranscripts.map((item) => (
-          <div className="transcript-row" key={item.title}>
-            <div>
-              <strong>{item.title}</strong>
-              <p>{item.text}</p>
-            </div>
-            <span>{item.meta}</span>
-          </div>
+        {recentTranscripts.slice(0, 3).map((item) => (
+          <TranscriptRow item={item} key={item.title} variant="compact" />
         ))}
       </div>
     </article>
@@ -870,27 +883,164 @@ function HotkeyList({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function SettingsPanel({
-  title,
-  rows,
+function StatusCard({
+  action,
+  Icon,
+  label,
+  onAction,
+  status,
+  value,
 }: {
+  action: string;
+  Icon: LucideIcon;
+  label: string;
+  onAction: () => void;
+  status: ReactNode;
+  value: string;
+}) {
+  return (
+    <article className="metric-card status-card">
+      <div className="card-header">
+        <span>
+          <Icon aria-hidden="true" size={15} />
+          {label}
+        </span>
+        {status}
+      </div>
+      <strong>{value}</strong>
+      <button className="ghost-button" onClick={onAction} type="button">
+        {action}
+      </button>
+    </article>
+  );
+}
+
+function SectionPanel({
+  children,
+  icon,
+  title,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
   title: string;
-  rows: [string, string][];
 }) {
   return (
     <article className="panel-card">
       <div className="section-heading compact">
         <h2>{title}</h2>
+        {icon}
       </div>
-      <div className="settings-list">
-        {rows.map(([label, value]) => (
-          <div className="settings-row" key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </div>
-        ))}
-      </div>
+      <div className="settings-list">{children}</div>
     </article>
+  );
+}
+
+function SettingRow({
+  children,
+  description,
+  label,
+}: {
+  children: ReactNode;
+  description: string;
+  label: string;
+}) {
+  return (
+    <div className="settings-row">
+      <span>
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
+      <div className="setting-control">{children}</div>
+    </div>
+  );
+}
+
+function TranscriptRow({
+  item,
+  variant,
+}: {
+  item: (typeof recentTranscripts)[number];
+  variant: "compact" | "full";
+}) {
+  const isFull = variant === "full";
+
+  return (
+    <div className={isFull ? "history-row" : "transcript-row"}>
+      <div>
+        <strong>{item.title}</strong>
+        <p>{item.text}</p>
+        <span>{item.meta}</span>
+      </div>
+      <div className="row-actions">
+        {isFull ? <span className="pill preserve">{item.output}</span> : null}
+        <button className={isFull ? "ghost-button" : "compact-action"} type="button">
+          <ClipboardPaste aria-hidden="true" size={15} />
+          Insert
+        </button>
+        <button className={isFull ? "ghost-button" : "compact-action"} type="button">
+          <Copy aria-hidden="true" size={15} />
+          Copy
+        </button>
+        {isFull ? (
+          <>
+            <button className="ghost-button" type="button">
+              <Pencil aria-hidden="true" size={15} />
+              Edit
+            </button>
+            <button className="ghost-button danger" type="button">
+              <Trash2 aria-hidden="true" size={15} />
+              Delete
+            </button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function Toggle({
+  defaultOn = false,
+  disabled = false,
+  label,
+}: {
+  defaultOn?: boolean;
+  disabled?: boolean;
+  label: string;
+}) {
+  const [enabled, setEnabled] = useState(defaultOn);
+
+  return (
+    <button
+      aria-label={label}
+      aria-pressed={enabled}
+      className={enabled ? "toggle is-on" : "toggle"}
+      disabled={disabled}
+      onClick={() => setEnabled((current) => !current)}
+      type="button"
+    >
+      <span />
+    </button>
+  );
+}
+
+function IconButton({
+  children,
+  danger = false,
+  label,
+}: {
+  children: ReactNode;
+  danger?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      aria-label={label}
+      className={danger ? "icon-button danger" : "icon-button"}
+      title={label}
+      type="button"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -901,12 +1051,16 @@ function SegmentedControl({
   options: string[];
   selected: string;
 }) {
+  const [active, setActive] = useState(selected);
+
   return (
     <div className="segmented-control">
       {options.map((option) => (
         <button
-          className={option === selected ? "active-segment" : ""}
+          aria-pressed={option === active}
+          className={option === active ? "active-segment" : ""}
           key={option}
+          onClick={() => setActive(option)}
           type="button"
         >
           {option}
