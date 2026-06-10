@@ -25,6 +25,23 @@ impl CommandError {
     pub fn invalid_settings(error: impl std::fmt::Display) -> Self {
         Self::new("invalid_settings", error.to_string())
     }
+
+    pub fn hotkey_registration_failed(shortcut: &str, error: impl std::fmt::Display) -> Self {
+        Self::new(
+            "hotkey_registration_failed",
+            format!(
+                "Could not register {}. Another app may already be using this shortcut. Choose a different hotkey. {}",
+                shortcut, error
+            ),
+        )
+    }
+
+    pub fn invalid_hotkey(shortcut: &str, error: impl std::fmt::Display) -> Self {
+        Self::new(
+            "invalid_hotkey",
+            format!("{} is not a valid hotkey. {}", shortcut, error),
+        )
+    }
 }
 
 impl From<rusqlite::Error> for CommandError {
