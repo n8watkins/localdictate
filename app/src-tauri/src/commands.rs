@@ -9,6 +9,7 @@ use crate::{
     db::Database,
     dictation::{self, DictationResult},
     error::CommandError,
+    file_transcribe::{self, TranscribeFileResult},
     hotkeys::{self, HotkeyStatus},
     model_manager::{self, DownloadRegistry},
     models::ModelInfo,
@@ -420,6 +421,31 @@ pub fn transcribe_recording(
     recording: RecordingResult,
 ) -> Result<Option<DictationResult>, CommandError> {
     dictation::transcribe_recording_for_app(&app, recording)
+}
+
+/// Transcribes a user-picked audio/video file. Async so the (possibly
+/// minutes-long) whisper-cli run happens on a blocking worker, never the
+/// main thread.
+#[tauri::command]
+pub async fn transcribe_file(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<TranscribeFileResult, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || file_transcribe::transcribe_file(&app, &path))
+        .await
+        .map_err(|error| {
+            CommandError::new(
+                "whisper_transcription_failed",
+                format!("File transcription task failed. {}", error),
+            )
+        })?
+}
+
+/// Writes transcribed text to `<source>.txt` next to the source file and
+/// returns the path written.
+#[tauri::command]
+pub fn save_text_file(path: String, text: String) -> Result<String, CommandError> {
+    file_transcribe::save_text_file(&path, &text)
 }
 
 #[tauri::command]

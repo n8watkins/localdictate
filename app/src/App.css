@@ -1488,3 +1488,24 @@ kbd {
     width: 100%;
   }
 }
+
+.file-transcribe-card {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-transcribe-card .section-heading,
+.file-transcribe-card p {
+  margin: 0;
+}
+
+.file-transcribe-card .toolbar-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-transcribe-card textarea {
+  min-height: 110px;
+}

@@ -52,14 +52,25 @@ pub fn transcribe(
         ));
     }
 
-    let executable = resolve_bundled_executable(app, "whisper-cli.exe")?;
     let output_prefix = output_prefix_for_wav(&request.wav_path);
+    transcribe_with_output_prefix(app, &request, &output_prefix)
+}
+
+/// Direct whisper-cli invocation with a caller-chosen output prefix, so the
+/// transient .txt never has to live next to the input file (file
+/// transcription may read from directories the app should not write to).
+pub(crate) fn transcribe_with_output_prefix(
+    app: &AppHandle,
+    request: &WhisperRequest,
+    output_prefix: &Path,
+) -> Result<WhisperTranscription, CommandError> {
+    let executable = resolve_bundled_executable(app, "whisper-cli.exe")?;
     let output_txt_path = output_prefix.with_extension("txt");
     let args = whisper_args(
         &request.model_path,
         &request.wav_path,
         &request.language,
-        &output_prefix,
+        output_prefix,
         &request.vocabulary_prompt,
     );
     let started = Instant::now();
@@ -151,19 +162,25 @@ fn output_prefix_for_wav(wav_path: &Path) -> PathBuf {
     parent.join(format!("whisper-{}", Uuid::new_v4().simple()))
 }
 
-fn run_whisper_command(
-    executable: &Path,
-    args: &[String],
-) -> Result<std::process::Output, CommandError> {
-    let mut command = Command::new(executable);
-    command.args(args);
-
+/// Keeps helper processes from flashing a console window on Windows.
+pub(crate) fn suppress_console_window(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+fn run_whisper_command(
+    executable: &Path,
+    args: &[String],
+) -> Result<std::process::Output, CommandError> {
+    let mut command = Command::new(executable);
+    command.args(args);
+    suppress_console_window(&mut command);
 
     command.output().map_err(|error| {
         CommandError::new(

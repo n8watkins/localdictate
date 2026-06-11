@@ -232,6 +232,12 @@ export type PartialTranscriptEvent = {
   finalized: boolean;
 };
 
+export type TranscribeFileResult = {
+  text: string;
+  durationMs: number | null;
+  latencyMs: number;
+};
+
 export type DictationResult = {
   sessionId: string;
   status: "saved";
@@ -444,6 +450,16 @@ export function transcribeRecording(
   recording: RecordingResult,
 ): Promise<DictationResult | null> {
   return invoke("transcribe_recording", { recording });
+}
+
+/** Transcribes an existing audio/video file; long files can take minutes. */
+export function transcribeFile(path: string): Promise<TranscribeFileResult> {
+  return invoke("transcribe_file", { path });
+}
+
+/** Writes text to `<source>.txt` next to the source file; returns the path written. */
+export function saveTextFile(path: string, text: string): Promise<string> {
+  return invoke("save_text_file", { path, text });
 }
 
 export function getHotkeyStatus(): Promise<HotkeyStatus> {

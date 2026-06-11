@@ -4,6 +4,7 @@ pub mod commands;
 pub mod db;
 pub mod dictation;
 pub mod error;
+pub mod file_transcribe;
 pub mod hotkeys;
 pub mod incremental;
 pub mod model_manager;
@@ -180,6 +181,8 @@ pub fn run() {
             commands::open_data_folder,
             commands::open_models_folder,
             commands::transcribe_recording,
+            commands::transcribe_file,
+            commands::save_text_file,
             commands::paste_last_transcript,
             commands::copy_last_transcript,
             commands::paste_transcript,
