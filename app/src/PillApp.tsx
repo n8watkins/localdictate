@@ -482,14 +482,21 @@ function PillApp() {
     const grow = async () => {
       // Let the DOM settle so measurements reflect the latest text.
       await new Promise(requestAnimationFrame);
-      const el = textRef.current;
+      const inner = textRef.current;
+      const clipBox = inner?.parentElement;
       const current = windowHeightRef.current ?? LAYOUT_SIZES.text.height;
-      if (!el || sizedLayoutRef.current !== "text") {
+      if (!inner || !clipBox || sizedLayoutRef.current !== "text") {
         return;
       }
+      // The clip box bottom-aligns its content, so text overflows off the
+      // top edge and never shows up in scrollHeight; measure the inner
+      // block's natural height against the box's visible height instead.
       const desired = Math.max(
         LAYOUT_SIZES.text.height,
-        Math.min(TEXT_MAX_HEIGHT, current - el.clientHeight + el.scrollHeight),
+        Math.min(
+          TEXT_MAX_HEIGHT,
+          current - clipBox.clientHeight + inner.offsetHeight,
+        ),
       );
       if (Math.abs(desired - current) < 2) {
         return;
@@ -616,8 +623,8 @@ function PillApp() {
             </button>
           </div>
           {layout === "text" ? (
-            <div className="pill-text" ref={textRef}>
-              {confirmation.text}
+            <div className="pill-text">
+              <div ref={textRef}>{confirmation.text}</div>
             </div>
           ) : null}
         </div>
@@ -628,8 +635,8 @@ function PillApp() {
           <div className="pill-rec">
             <Visualizer />
             {displayMode === "visualizer_with_text" ? (
-              <div className="pill-text" ref={textRef}>
-                {partialText || "Listening..."}
+              <div className="pill-text">
+                <div ref={textRef}>{partialText || "Listening..."}</div>
               </div>
             ) : null}
           </div>
