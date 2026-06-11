@@ -69,10 +69,18 @@ const TEXT_MAX_HEIGHT = 150;
 
 function pillLayout(
   mode: PillDisplayMode,
+  status: AppStatus | null,
   recording: boolean,
   confirming: boolean,
 ): PillLayout {
-  if (mode === "visualizer_with_text" && (recording || confirming)) {
+  // Text mode also covers the brief stop/transcribe/paste window so the
+  // grown pill doesn't bounce through the bar size before confirming.
+  const pending =
+    status === "Stopping" || status === "Transcribing" || status === "Pasting";
+  if (
+    mode === "visualizer_with_text" &&
+    (recording || confirming || pending)
+  ) {
     return "text";
   }
   // The confirmation header (check + "Transcribed" + Copy) needs the full
@@ -206,6 +214,9 @@ function PillApp() {
   /** Logical height the window was last sized to (layout base or text growth). */
   const windowHeightRef = useRef<number | null>(null);
   const textRef = useRef<HTMLDivElement | null>(null);
+  /** Serializes window size/position/show/hide mutations: concurrent ops read
+   * stale positions and compound their bottom-anchoring shifts. */
+  const windowOpChainRef = useRef<Promise<void>>(Promise.resolve());
   const pointerRef = useRef<{ x: number; y: number; dragging: boolean } | null>(
     null,
   );
@@ -384,7 +395,13 @@ function PillApp() {
   const updatedAt = appState?.updatedAt ?? null;
   const isRecording = status === "Recording";
   const confirming = confirmation !== null;
-  const layout = pillLayout(displayMode, isRecording, confirming);
+  const layout = pillLayout(displayMode, status, isRecording, confirming);
+
+  const queueWindowOp = useCallback((op: () => Promise<void>) => {
+    windowOpChainRef.current = windowOpChainRef.current.then(op).catch(() => {
+      // Window management is unavailable outside Tauri.
+    });
+  }, []);
 
   // Show/hide and resize the native window to match app state and layout.
   useEffect(() => {
@@ -397,7 +414,7 @@ function PillApp() {
 
     if (!visible) {
       setPartial(null);
-      void pillWindow.hide().catch(() => {});
+      queueWindowOp(() => pillWindow.hide());
       return;
     }
 
@@ -452,12 +469,12 @@ function PillApp() {
       }
     };
 
-    void show();
+    queueWindowOp(show);
 
     if (status === "Ready" && !confirming) {
       hideTimer = window.setTimeout(() => {
         setPartial(null);
-        void pillWindow.hide().catch(() => {});
+        queueWindowOp(() => pillWindow.hide());
       }, READY_HIDE_DELAY_MS);
     }
 
@@ -466,7 +483,7 @@ function PillApp() {
         window.clearTimeout(hideTimer);
       }
     };
-  }, [status, showPill, pillX, pillY, updatedAt, confirming, layout]);
+  }, [status, showPill, pillX, pillY, updatedAt, confirming, layout, queueWindowOp]);
 
   // Grow the text-mode window with the transcript (and shrink back when a new
   // recording starts), keeping the bottom edge anchored. Measures how much
@@ -501,26 +518,22 @@ function PillApp() {
       if (Math.abs(desired - current) < 2) {
         return;
       }
-      try {
-        const deltaY = Math.round(
-          (current - desired) * (await pillWindow.scaleFactor()),
+      const deltaY = Math.round(
+        (current - desired) * (await pillWindow.scaleFactor()),
+      );
+      const position = await pillWindow.outerPosition();
+      windowHeightRef.current = desired;
+      await pillWindow.setSize(
+        new LogicalSize(LAYOUT_SIZES.text.width, desired),
+      );
+      if (deltaY !== 0) {
+        await pillWindow.setPosition(
+          new PhysicalPosition(position.x, position.y + deltaY),
         );
-        const position = await pillWindow.outerPosition();
-        windowHeightRef.current = desired;
-        await pillWindow.setSize(
-          new LogicalSize(LAYOUT_SIZES.text.width, desired),
-        );
-        if (deltaY !== 0) {
-          await pillWindow.setPosition(
-            new PhysicalPosition(position.x, position.y + deltaY),
-          );
-        }
-      } catch {
-        // Window management is unavailable outside Tauri.
       }
     };
-    void grow();
-  }, [layout, liveText, confirmedText, updatedAt]);
+    queueWindowOp(grow);
+  }, [layout, liveText, confirmedText, updatedAt, queueWindowOp]);
 
   const handleStop = useCallback(async () => {
     setStopping(true);
