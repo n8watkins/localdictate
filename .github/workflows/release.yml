@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  WHISPER_CPP_VERSION: v1.8.6
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Fetch whisper.cpp binaries
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\whisper-bin-x64.zip"
+          $extract = "$env:RUNNER_TEMP\whisper-bin"
+          Invoke-WebRequest -Uri "https://github.com/ggml-org/whisper.cpp/releases/download/$env:WHISPER_CPP_VERSION/whisper-bin-x64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $extract
+          $dest = "app/src-tauri/resources/bin/windows"
+          $needed = @("whisper-cli.exe", "whisper-server.exe", "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll")
+          foreach ($name in $needed) {
+            $file = Get-ChildItem -Path $extract -Recurse -Filter $name | Select-Object -First 1
+            if (-not $file) { throw "Missing $name in whisper.cpp release zip" }
+            Copy-Item $file.FullName -Destination $dest
+          }
+          Get-ChildItem $dest
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Backend tests
+        working-directory: app/src-tauri
+        run: cargo test
+
+      - name: Build installers
+        working-directory: app
+        run: npm run tauri build
+
+      - name: Attach installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/src-tauri/target/release/bundle/nsis/*-setup.exe
+            app/src-tauri/target/release/bundle/msi/*.msi
+          generate_release_notes: true
