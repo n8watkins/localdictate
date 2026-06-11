@@ -1,78 +1,95 @@
 # LocalDictate - Status and Next Steps
 
-Status: Ready to start Agent 1 - Backend Foundation  
-Last updated: 2026-06-10  
+Status: Core V1 implementation complete; ready for Windows resource packaging and manual QA  
+Last updated: 2026-06-11  
 Repository: `https://github.com/n8watkins/localdictate`  
 Visibility: Private
 
-## Current Progress
+## Current State
 
-### Product and planning
+LocalDictate is now a Tauri v2 + React + TypeScript desktop app with the main V1 feature lanes implemented and pushed to `main`.
 
-- Captured the full product requirements in [PRD.md](./PRD.md).
-- Created the milestone implementation outline in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
-- Created the multi-agent assignment plan in [AGENT_ORCHESTRATION.md](./AGENT_ORCHESTRATION.md).
-- Created the frontend-specific refinement plan in [FRONTEND_UX_REFINEMENT_PLAN.md](./FRONTEND_UX_REFINEMENT_PLAN.md).
+The app includes:
 
-### App scaffold
+- Rust backend state machine, settings, SQLite persistence, migrations, and Tauri commands.
+- Command-backed React UI for dashboard, settings, history, models, audio, hotkeys, and transcript actions.
+- System tray and global hotkey backend integration.
+- Microphone enumeration, recording lifecycle, level events, timeout handling, and WAV normalization to 16 kHz mono PCM16.
+- Whisper/model manager foundation using a bundled `whisper-cli.exe` resource path and downloadable local models.
+- Last Transcript Buffer, output modes, copy/paste commands, and clipboard-preserving direct insert path.
+- Searchable transcript history, edit/delete/clear actions, retention enforcement, and stats refresh.
+- Final UX wiring for models, microphones, event refresh, in-app toasts, floating pill, close-to-tray behavior, and Windows packaging prep.
 
-- Created a Tauri v2 + React + TypeScript app in `app/`.
-- Set app identity to `LocalDictate` with identifier `com.natkins.localdictate`.
-- Installed and used `lucide-react` for app/navigation/action icons.
-- Confirmed WSL/Linux Tauri prerequisites are installed and detected.
+## What We Have Done
 
-### Frontend state
+### Planning and docs
 
-- Built the actual frontend foundation, not a throwaway reference mock.
-- Current frontend includes views for:
-  - Dashboard
-  - Transcribe
-  - History
-  - Settings
-  - Hotkeys
-  - Models
-  - Audio
-  - About
-- Refined the UI based on product feedback:
-  - reduced dashboard clutter
-  - added clearer component hierarchy
-  - added reusable UI primitives
-  - added toggles and setting rows
-  - added transcript row actions
-  - improved model table/list styling
-  - restyled selects/dropdowns for the dark theme
+- Captured product requirements in [PRD.md](./PRD.md).
+- Captured milestone plan in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
+- Captured multi-agent plan in [AGENT_ORCHESTRATION.md](./AGENT_ORCHESTRATION.md).
+- Added Windows release QA checklist in [V1_WINDOWS_QA_CHECKLIST.md](./V1_WINDOWS_QA_CHECKLIST.md).
 
-Current frontend data is still mock/local component state. The shell is intended to be kept and wired to backend commands.
+### Backend
 
-### GitHub state
+- Added app state machine with `Idle`, `Recording`, `Stopping`, `Transcribing`, `Pasting`, `Ready`, `Error`, and `Paused`.
+- Added settings defaults/schema matching the PRD baseline.
+- Added SQLite foundation for settings, transcripts, models, and stats.
+- Added transcript domain model and Last Transcript Buffer behavior.
+- Added tray menu and global hotkey registration/rebinding.
+- Added audio capture, normalized WAV output, level events, min/max duration rules, and temp lifecycle.
+- Added model catalog, model download/select/delete/retry/cancel commands, and app data model storage.
+- Added Whisper CLI invocation path, transcription runner, and dictation integration.
+- Added output/copy/paste commands with direct insert and compatibility clipboard paste.
+- Added transcript search, get, update, delete, clear history, retention, and stats commands.
 
-Private GitHub repo has been created and pushed:
+### Frontend
+
+- Replaced mock dashboard/settings/history data with Tauri command calls.
+- Wired settings persistence.
+- Wired Last Transcript Buffer copy/insert/clear actions.
+- Wired History search, pagination, edit, delete, clear all, copy, and insert.
+- Wired Models view to backend model commands and download progress.
+- Wired Audio view to backend microphone enumeration and recording controls.
+- Added event-driven refresh for app state, audio, dictation, output, model progress, history, and stats.
+- Added in-app toasts and floating pill states.
+- Kept existing visual language and compact desktop utility layout.
+
+### Packaging prep
+
+- Added Windows bundle/resource config for the expected Whisper CLI resource path.
+- Added resource instructions at `app/src-tauri/resources/bin/windows/README.md`.
+- Cleaned up Cargo metadata.
+- Added close-to-tray behavior.
+- Added Windows QA/release checklist.
+
+## Current Commits
 
 ```text
-https://github.com/n8watkins/localdictate
-```
-
-Current commits:
-
-```text
+e9a418f Polish UX wiring and Windows packaging
+65d83b4 Implement transcript history retention and stats
+ec054ea Implement output paste and clipboard commands
+d8b4da1 Implement whisper transcription and model management
+747ce5b Implement audio capture backend
+fbd9750 Implement tray and global hotkeys
+eb92546 Wire frontend to Tauri commands
+8e8d59b Add backend foundation
+629c847 Add LocalDictate status handoff
 68b9592 Refine LocalDictate frontend UX
 7d186c1 Initial LocalDictate scaffold and plans
 ```
 
 ## Verified Commands
 
-From repo root:
+Latest full hardening pass verified:
 
 ```bash
-cd /home/natkins/personal/tools/localdictate
-git status -sb
+cd /home/natkins/personal/tools/localdictate/app/src-tauri
+cargo fmt
+cargo check
+cargo test
 ```
 
-Expected:
-
-```text
-## main...origin/main
-```
+Result: Rust checks passed; 22 tests passed.
 
 Frontend build:
 
@@ -81,274 +98,129 @@ cd /home/natkins/personal/tools/localdictate/app
 npm run build
 ```
 
-Expected: `tsc && vite build` passes.
+Result: passed.
 
-Tauri environment:
+Tauri build on this Linux host:
 
 ```bash
 cd /home/natkins/personal/tools/localdictate/app
-npm run tauri info
+npm run tauri build
 ```
 
-Expected: WebKitGTK, RSVG, Rust, Cargo, Node, npm, and Tauri are detected.
+Result: passed and built the Linux release app at:
 
-Rust check:
-
-```bash
-cd /home/natkins/personal/tools/localdictate/app/src-tauri
-cargo check
+```text
+app/src-tauri/target/release/app
 ```
 
-Expected: passes.
+Important: this Linux host did not produce Windows NSIS/MSI installer artifacts. Windows packaging still needs to run on Windows.
+
+## What Still Needs To Be Done
+
+### Required before Windows MVP validation
+
+1. Add the real Whisper CLI binary:
+
+   ```text
+   app/src-tauri/resources/bin/windows/whisper-cli.exe
+   ```
+
+   Do not ship a placeholder executable. Runtime transcription intentionally reports `missing_whisper_executable` until this binary exists in the packaged resources.
+
+2. Build and smoke test on Windows:
+
+   ```powershell
+   cd app
+   npm run tauri build
+   ```
+
+3. Run the Windows acceptance checklist:
+
+   ```text
+   docs/V1_WINDOWS_QA_CHECKLIST.md
+   ```
+
+4. Validate real hardware/system behavior:
+
+   - Microphone enumeration and selection.
+   - Recording and normalized WAV output.
+   - Hold-to-talk press/release reliability.
+   - `Ctrl+Alt+V` paste-last hotkey.
+   - Direct insert into Notepad, browser input, VS Code, and elevated/admin apps.
+   - Compatibility paste clipboard restore behavior.
+   - Model download/select/delete/retry.
+   - Whisper transcription using a downloaded model.
+   - History, stats, retention, and Last Transcript Buffer behavior.
+
+### Remaining polish/non-blocking V1 items
+
+- Add production code signing before external distribution.
+- Decide and record stable Windows installer upgrade behavior.
+- Add native OS notifications if wanted; current feedback is in-app toast plus floating pill.
+- Add Tauri autostart plugin wiring for `launchAtStartup`.
+- Add final tray icon state variants when assets exist.
+- Add open data/model folder commands; UI currently leaves these disabled.
+- Consider SQLite FTS for large transcript histories later. Current search uses `LIKE`, which is acceptable for V1.
 
 ## Immediate Next Step
 
-Start:
+Start a Windows QA/resource packaging agent.
 
-```text
-Agent 1 - Backend Foundation
-```
-
-This is the correct next step because the frontend now needs real backend contracts before audio, whisper, paste, tray, hotkey, history, or model work can be integrated cleanly.
+This is the correct next step because core implementation is complete and the remaining high-risk work is platform validation: bundled Whisper resource, installer output, Windows microphone behavior, Windows hotkey behavior, and Windows paste behavior.
 
 ## Fresh Context Start Prompt
 
 Use this exact prompt in a new context:
 
 ```text
-Start Agent 1 - Backend Foundation for LocalDictate.
+Start Windows QA and Packaging Agent for LocalDictate.
 
 Repo path: /home/natkins/personal/tools/localdictate
 
 Read these first:
 - docs/STATUS_AND_NEXT_STEPS.md
-- docs/AGENT_ORCHESTRATION.md
-- docs/PRD.md sections 5, 8, 15, 16, and 18
+- docs/V1_WINDOWS_QA_CHECKLIST.md
+- docs/PRD.md sections 17, 18, 20, and 21
+- app/src-tauri/resources/bin/windows/README.md
+- app/src-tauri/tauri.conf.json
+- app/src-tauri/src/whisper.rs
+- app/src-tauri/src/audio.rs
+- app/src-tauri/src/hotkeys.rs
+- app/src-tauri/src/output.rs
 
 Goal:
-Implement the Rust backend foundation for the Tauri app. Create an explicit app state machine, Last Transcript Buffer domain model, settings defaults/schema, SQLite migrations, and initial Tauri commands for frontend integration.
+Prepare and validate the Windows MVP release path. Add the real whisper.cpp `whisper-cli.exe` resource if available, build on Windows, run installer/resource smoke tests, and execute the manual Windows QA checklist.
 
-Own these areas:
-- app/src-tauri/src/**
-- app/src-tauri/Cargo.toml
-- app/src-tauri/capabilities/**
-- app/src-tauri/migrations/** if needed
-
-Do not implement real audio capture, whisper transcription, tray/hotkeys, or paste behavior yet. Stub command responses are acceptable only when they preserve the final contract shape.
-
-Required commands:
-- get_app_state
-- get_settings
-- update_settings
-- get_last_transcript
-- clear_last_transcript
-- list_recent_transcripts
-- get_basic_stats
+Do not expand product scope. Focus on packaging, resource correctness, Windows runtime validation, and clear fixes for issues found during QA.
 
 Required checks:
+- git status -sb
+- cd app && npm run build
 - cd app/src-tauri && cargo check
 - cd app/src-tauri && cargo test
-- cd app && npm run build if frontend command types or bindings are touched
+- cd app && npm run tauri build on Windows
 
-Commit and push when done.
+Required manual QA:
+- Follow docs/V1_WINDOWS_QA_CHECKLIST.md.
+- Verify `app/src-tauri/resources/bin/windows/whisper-cli.exe` exists before packaging.
+- Verify installed resources include `bin/windows/whisper-cli.exe`.
+- Download/select a model from the Models view.
+- Record from a real microphone.
+- Transcribe locally with Whisper.
+- Verify Last Transcript Buffer, History, and Stats update.
+- Verify direct insert and compatibility paste in common Windows apps.
+- Verify tray and global hotkeys while the main window is hidden/unfocused.
+
+Deliverables:
+- Fixes for any blocking Windows packaging/runtime bugs found.
+- Updated docs/V1_WINDOWS_QA_CHECKLIST.md with pass/fail notes.
+- A short release readiness summary.
+- Commit and push when done.
 ```
 
-## Agent 1 Required Deliverables
+## Takeover Notes
 
-Agent 1 should produce:
-
-- `app_state` module with states:
-  - `Idle`
-  - `Recording`
-  - `Stopping`
-  - `Transcribing`
-  - `Pasting`
-  - `Ready`
-  - `Error`
-  - `Paused`
-- Last Transcript Buffer model:
-  - id
-  - text
-  - created_at
-  - duration_ms
-  - word_count
-  - character_count
-  - model_id
-  - language
-- Settings model/defaults matching PRD section 16.
-- SQLite persistence foundation for:
-  - `transcripts`
-  - `settings`
-  - `models`
-  - `app_stats_daily`
-- Tauri command registration in `lib.rs`.
-- Unit tests for state transitions and metadata helpers.
-- A short handoff note for Agent 2 frontend command integration.
-
-## Agent 1 Non-Goals
-
-Do not implement:
-
-- Real audio recording.
-- Whisper model downloads.
-- whisper.cpp transcription.
-- Direct insert paste.
-- Clipboard restore paste.
-- Windows tray behavior.
-- Global hotkey registration.
-- Real transcript history search UI wiring.
-- Any cloud or telemetry feature.
-
-## Suggested Agent 1 Internal Plan
-
-1. Inspect current Tauri backend:
-
-   ```bash
-   cd /home/natkins/personal/tools/localdictate/app/src-tauri
-   sed -n '1,220p' src/lib.rs
-   sed -n '1,220p' Cargo.toml
-   ```
-
-2. Choose a conservative Rust module layout:
-
-   ```text
-   src/
-     lib.rs
-     app_state.rs
-     settings.rs
-     transcript.rs
-     stats.rs
-     db.rs
-     commands.rs
-   ```
-
-3. Add dependencies only if needed. Preferred likely dependencies:
-
-   - `serde`
-   - `serde_json`
-   - `chrono`
-   - `uuid`
-   - SQLite layer if implementing persistence now, such as `rusqlite` or Tauri SQL plugin.
-
-4. Implement type models and pure helpers first.
-
-5. Implement simple in-memory `tauri::State` service if SQLite setup would otherwise block command contracts.
-
-6. Add migrations/persistence foundation before finishing if feasible in the same pass.
-
-7. Register commands and test command payload types compile.
-
-8. Run:
-
-   ```bash
-   cargo fmt
-   cargo test
-   cargo check
-   ```
-
-9. Commit and push:
-
-   ```bash
-   git status -sb
-   git add app/src-tauri docs/STATUS_AND_NEXT_STEPS.md
-   git commit -m "Add backend foundation"
-   git push
-   ```
-
-## Sub-Agent Use Instructions
-
-Sub-agents are allowed and encouraged for Agent 1, but keep write scopes disjoint.
-
-Before spawning sub-agents, the lead agent should:
-
-1. Read the required docs.
-2. Inspect the existing backend files.
-3. Decide the immediate local critical-path task.
-4. Delegate only parallel side tasks that do not block the next local step.
-
-Recommended sub-agent split:
-
-### Backend Worker A - State and Domain Models
-
-Ownership:
-
-- `app/src-tauri/src/app_state.rs`
-- `app/src-tauri/src/transcript.rs`
-- unit tests in those files
-
-Mission:
-
-- Implement app states and transition helpers.
-- Implement Last Transcript Buffer and transcript metadata helpers.
-- Ensure empty transcript text cannot update the buffer.
-
-### Backend Worker B - Settings and Stats Models
-
-Ownership:
-
-- `app/src-tauri/src/settings.rs`
-- `app/src-tauri/src/stats.rs`
-- unit tests in those files
-
-Mission:
-
-- Implement settings schema/defaults from PRD section 16.
-- Implement basic stats payload types and placeholder aggregation helpers.
-
-### Backend Worker C - Persistence Spike
-
-Ownership:
-
-- `app/src-tauri/src/db.rs`
-- `app/src-tauri/migrations/**`
-- `app/src-tauri/Cargo.toml` only if dependency changes are required
-
-Mission:
-
-- Determine the simplest SQLite foundation for V1.
-- Add the required schema/migrations.
-- Expose repository functions or a clear persistence interface.
-
-### Lead Agent - Integration
-
-Ownership:
-
-- `app/src-tauri/src/lib.rs`
-- `app/src-tauri/src/commands.rs`
-- any final module exports
-
-Mission:
-
-- Integrate workers' modules.
-- Register Tauri commands.
-- Resolve compile/test failures.
-- Run final checks.
-- Commit and push.
-
-Important:
-
-- Workers must not edit each other's files.
-- Workers must not revert existing frontend work.
-- If persistence becomes too large, preserve command contract shapes with in-memory state and document persistence follow-up clearly.
-
-## Agent 1 Completion Criteria
-
-Agent 1 is done when:
-
-- The backend compiles.
-- Tests pass.
-- Initial Tauri commands exist and return stable payload shapes.
-- Last Transcript Buffer is modeled separately from clipboard/history.
-- Settings defaults exist.
-- SQLite schema/migration path is either implemented or explicitly stubbed with a clear next task.
-- A commit is pushed to the private GitHub repo.
-
-## After Agent 1
-
-Next recommended work:
-
-1. Agent 2 - Frontend Command Integration.
-2. Agent 3 - Tray and Global Hotkeys.
-3. Agent 4 - Audio Capture.
-
-Agent 2 should replace mock data in `App.tsx` with real command calls. Agent 3 and Agent 4 can run in parallel once Agent 1 contracts are stable.
+- `main` should be clean and match `origin/main` before starting.
+- The app compiles and builds on Linux, but Windows installer output has not been validated.
+- The expected Whisper binary path is intentionally documented but not committed with a real executable.
+- Most remaining risk is Windows-specific runtime behavior, not missing application architecture.
