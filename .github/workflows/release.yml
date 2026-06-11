@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -58,9 +59,19 @@ jobs:
         run: npm run tauri build
 
       - name: Attach installers to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             app/src-tauri/target/release/bundle/nsis/*-setup.exe
             app/src-tauri/target/release/bundle/msi/*.msi
           generate_release_notes: true
+
+      - name: Upload installers as workflow artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: localdictate-installers
+          path: |
+            app/src-tauri/target/release/bundle/nsis/*-setup.exe
+            app/src-tauri/target/release/bundle/msi/*.msi
