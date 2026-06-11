@@ -9,6 +9,7 @@ use crate::{
     app_state::{AppEvent, AppStateSnapshot, AppStatus},
     audio,
     commands::BackendState,
+    dictation,
     error::CommandError,
 };
 
@@ -128,7 +129,10 @@ pub fn stop_dictation(app: &AppHandle) -> Result<(), CommandError> {
         return Ok(());
     }
 
-    let _ = audio::stop_recording_for_app(app)?;
+    let result = audio::stop_recording_for_app(app)?;
+    let status = state.app_state()?.status().clone();
+    update_tray_status(app, status);
+    dictation::transcribe_recording_for_app(app, result)?;
     let status = state.app_state()?.status().clone();
     update_tray_status(app, status);
     Ok(())

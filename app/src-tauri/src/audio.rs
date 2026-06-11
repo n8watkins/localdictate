@@ -70,7 +70,7 @@ pub struct RecordingSessionInfo {
     pub is_test_clip: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordingResultStatus {
     Completed,
@@ -79,7 +79,7 @@ pub enum RecordingResultStatus {
     TimedOut,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingResult {
     pub session_id: String,

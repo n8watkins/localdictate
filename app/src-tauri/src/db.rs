@@ -4,12 +4,17 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
-    error::CommandError, settings::AppSettings, stats::BasicStats, transcript::Transcript,
+    error::CommandError,
+    models::{ModelRecord, ModelStatus},
+    settings::AppSettings,
+    stats::BasicStats,
+    transcript::Transcript,
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
 const SETTINGS_KEY: &str = "app_settings";
 const LAST_TRANSCRIPT_ID_KEY: &str = "last_transcript_id";
+const LAST_TRANSCRIPT_BUFFER_KEY: &str = "last_transcript_buffer";
 
 pub struct Database {
     conn: Connection,
@@ -82,6 +87,13 @@ impl Database {
     }
 
     pub fn get_last_transcript(&self) -> Result<Option<Transcript>, CommandError> {
+        if let Some(value) = self.get_setting_value(LAST_TRANSCRIPT_BUFFER_KEY)? {
+            if !value.trim().is_empty() {
+                let transcript = serde_json::from_str(&value)?;
+                return Ok(Some(transcript));
+            }
+        }
+
         let Some(id) = self.get_setting_value(LAST_TRANSCRIPT_ID_KEY)? else {
             return Ok(None);
         };
@@ -94,18 +106,108 @@ impl Database {
     }
 
     pub fn clear_last_transcript(&self) -> Result<(), CommandError> {
+        self.upsert_setting(LAST_TRANSCRIPT_BUFFER_KEY, "")?;
         self.upsert_setting(LAST_TRANSCRIPT_ID_KEY, "")?;
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn save_last_transcript(&self, transcript: &Transcript) -> Result<(), CommandError> {
+        self.save_last_transcript_with_history(transcript, true)
+    }
+
+    pub fn save_last_transcript_with_history(
+        &self,
+        transcript: &Transcript,
+        history_enabled: bool,
+    ) -> Result<(), CommandError> {
         if transcript.text.trim().is_empty() {
             return Ok(());
         }
 
-        self.insert_transcript(transcript)?;
+        self.upsert_setting(
+            LAST_TRANSCRIPT_BUFFER_KEY,
+            &serde_json::to_string(transcript)?,
+        )?;
+        if history_enabled {
+            self.insert_transcript(transcript)?;
+        }
         self.upsert_setting(LAST_TRANSCRIPT_ID_KEY, &transcript.id)?;
+        Ok(())
+    }
+
+    pub fn list_model_records(&self) -> Result<Vec<ModelRecord>, CommandError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, filename, local_path, size_bytes, status, checksum, selected, downloaded_at
+                 FROM models",
+            )
+            .map_err(CommandError::database)?;
+
+        let rows = stmt
+            .query_map([], model_record_from_row)
+            .map_err(CommandError::database)?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(CommandError::database)
+    }
+
+    pub fn get_model_record(&self, id: &str) -> Result<Option<ModelRecord>, CommandError> {
+        self.conn
+            .query_row(
+                "SELECT id, name, filename, local_path, size_bytes, status, checksum, selected, downloaded_at
+                 FROM models
+                 WHERE id = ?1",
+                [id],
+                model_record_from_row,
+            )
+            .optional()
+            .map_err(CommandError::database)
+    }
+
+    pub fn upsert_model_record(&self, record: &ModelRecord) -> Result<(), CommandError> {
+        self.conn
+            .execute(
+                "INSERT INTO models (
+                    id, name, filename, local_path, size_bytes, status, checksum, selected, downloaded_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    filename = excluded.filename,
+                    local_path = excluded.local_path,
+                    size_bytes = excluded.size_bytes,
+                    status = excluded.status,
+                    checksum = excluded.checksum,
+                    selected = excluded.selected,
+                    downloaded_at = excluded.downloaded_at",
+                params![
+                    &record.id,
+                    &record.name,
+                    &record.filename,
+                    &record.local_path,
+                    record.size_bytes.map(|value| value as i64),
+                    record.status.as_db_value(),
+                    &record.checksum,
+                    record.selected as i64,
+                    record.downloaded_at.as_ref().map(|date| date.to_rfc3339()),
+                ],
+            )
+            .map_err(CommandError::database)?;
+
+        Ok(())
+    }
+
+    pub fn mark_model_selected(&self, selected_model_id: &str) -> Result<(), CommandError> {
+        self.conn
+            .execute("UPDATE models SET selected = 0 WHERE selected != 0", [])
+            .map_err(CommandError::database)?;
+        self.conn
+            .execute(
+                "UPDATE models SET selected = 1, status = ?2 WHERE id = ?1",
+                params![selected_model_id, ModelStatus::Selected.as_db_value()],
+            )
+            .map_err(CommandError::database)?;
         Ok(())
     }
 
@@ -265,6 +367,29 @@ fn transcript_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transcript> 
     })
 }
 
+fn model_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRecord> {
+    let status: String = row.get(5)?;
+    let downloaded_at: Option<String> = row.get(8)?;
+
+    Ok(ModelRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        filename: row.get(2)?,
+        local_path: row.get(3)?,
+        size_bytes: row
+            .get::<_, Option<i64>>(4)?
+            .map(|value| value.max(0) as u64),
+        status: ModelStatus::from_db_value(&status),
+        checksum: row.get(6)?,
+        selected: row.get::<_, i64>(7)? != 0,
+        downloaded_at: downloaded_at.and_then(|date| {
+            DateTime::parse_from_rfc3339(&date)
+                .ok()
+                .map(|date| date.with_timezone(&Utc))
+        }),
+    })
+}
+
 fn enum_to_json_string<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -324,5 +449,22 @@ mod tests {
         db.clear_last_transcript().unwrap();
         assert!(db.get_last_transcript().unwrap().is_none());
         assert_eq!(db.list_recent_transcripts(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn last_transcript_buffer_can_save_without_history() {
+        let db = Database::in_memory().unwrap();
+        let transcript =
+            Transcript::new_last_buffer("Buffer only", Some(900), None, Some("en".to_string()))
+                .unwrap();
+
+        db.save_last_transcript_with_history(&transcript, false)
+            .unwrap();
+
+        assert_eq!(
+            db.get_last_transcript().unwrap().unwrap().text,
+            "Buffer only"
+        );
+        assert!(db.list_recent_transcripts(10).unwrap().is_empty());
     }
 }

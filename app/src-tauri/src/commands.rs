@@ -4,8 +4,11 @@ use crate::{
     app_state::{AppEvent, AppStateMachine, AppStateSnapshot},
     audio::{self, MicrophoneInfo, RecordingResult, RecordingSessionInfo, StartRecordingRequest},
     db::Database,
+    dictation::{self, DictationResult},
     error::CommandError,
     hotkeys::{self, HotkeyStatus},
+    model_manager::{self, DownloadRegistry},
+    models::ModelInfo,
     settings::AppSettings,
     stats::BasicStats,
     transcript::Transcript,
@@ -15,6 +18,7 @@ pub struct BackendState {
     app_state: Mutex<AppStateMachine>,
     audio: Mutex<audio::AudioService>,
     db: Mutex<Database>,
+    model_downloads: DownloadRegistry,
 }
 
 impl BackendState {
@@ -23,6 +27,7 @@ impl BackendState {
             app_state: Mutex::new(AppStateMachine::default()),
             audio: Mutex::new(audio::AudioService::new(audio_temp_dir)),
             db: Mutex::new(db),
+            model_downloads: DownloadRegistry::default(),
         }
     }
 
@@ -42,6 +47,10 @@ impl BackendState {
         self.audio.lock().map_err(|_| {
             CommandError::new("audio_lock_poisoned", "Could not access audio service.")
         })
+    }
+
+    pub fn model_downloads(&self) -> &DownloadRegistry {
+        &self.model_downloads
     }
 
     pub fn transition_app_state(&self, event: AppEvent) -> Result<AppStateSnapshot, CommandError> {
@@ -205,4 +214,74 @@ pub fn record_test_clip(
     duration_ms: Option<u64>,
 ) -> Result<RecordingResult, CommandError> {
     audio::record_test_clip_for_app(&app, duration_ms)
+}
+
+#[tauri::command]
+pub fn transcribe_recording(
+    app: tauri::AppHandle,
+    recording: RecordingResult,
+) -> Result<DictationResult, CommandError> {
+    dictation::transcribe_recording_for_app(&app, recording)
+}
+
+#[tauri::command]
+pub fn list_models(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+) -> Result<Vec<ModelInfo>, CommandError> {
+    let db = state.db()?;
+    model_manager::list_models(&app, &db, state.model_downloads())
+}
+
+#[tauri::command]
+pub fn download_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    model_id: String,
+) -> Result<ModelInfo, CommandError> {
+    let db = state.db()?;
+    model_manager::download_model(&app, &db, state.model_downloads(), &model_id)
+}
+
+#[tauri::command]
+pub fn cancel_model_download(
+    state: tauri::State<'_, BackendState>,
+    model_id: String,
+) -> Result<(), CommandError> {
+    if model_manager::request_cancel_download(state.model_downloads(), &model_id)? {
+        return Ok(());
+    }
+
+    let db = state.db()?;
+    model_manager::cancel_model_download(&db, state.model_downloads(), &model_id)
+}
+
+#[tauri::command]
+pub fn retry_model_download(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    model_id: String,
+) -> Result<ModelInfo, CommandError> {
+    let db = state.db()?;
+    model_manager::retry_model_download(&app, &db, state.model_downloads(), &model_id)
+}
+
+#[tauri::command]
+pub fn delete_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    model_id: String,
+) -> Result<ModelInfo, CommandError> {
+    let db = state.db()?;
+    model_manager::delete_model(&app, &db, &model_id)
+}
+
+#[tauri::command]
+pub fn select_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    model_id: String,
+) -> Result<ModelInfo, CommandError> {
+    let db = state.db()?;
+    model_manager::select_model(&app, &db, &model_id)
 }

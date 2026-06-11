@@ -2,12 +2,16 @@ pub mod app_state;
 pub mod audio;
 pub mod commands;
 pub mod db;
+pub mod dictation;
 pub mod error;
 pub mod hotkeys;
+pub mod model_manager;
+pub mod models;
 pub mod settings;
 pub mod stats;
 pub mod transcript;
 pub mod tray;
+pub mod whisper;
 
 use commands::BackendState;
 use db::Database;
@@ -52,7 +56,14 @@ pub fn run() {
             commands::start_recording,
             commands::stop_recording,
             commands::cancel_recording,
-            commands::record_test_clip
+            commands::record_test_clip,
+            commands::transcribe_recording,
+            commands::list_models,
+            commands::download_model,
+            commands::cancel_model_download,
+            commands::retry_model_download,
+            commands::delete_model,
+            commands::select_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
