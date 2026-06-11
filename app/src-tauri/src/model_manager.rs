@@ -692,16 +692,6 @@ fn external_model_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from(path));
     }
 
-    #[cfg(windows)]
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        dirs.push(
-            PathBuf::from(profile)
-                .join(".cache")
-                .join("openwhispr")
-                .join("whisper-models"),
-        );
-    }
-
     dirs
 }
 

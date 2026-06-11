@@ -2256,7 +2256,7 @@ function ModelsView({
                   <span>
                     {model.filename}
                     {model.source === "external_cache"
-                      ? " - OpenWhispr cache"
+                      ? " - external model dir"
                       : ""}
                   </span>
                   <div className="progress-track">
@@ -2359,8 +2359,8 @@ function ModelsView({
           {settings.selectedModelId ?? "No model selected"}
         </strong>
         <p className="muted">
-          LocalDictate uses its own app data models first, then compatible files
-          from the OpenWhispr cache.
+          LocalDictate uses its own app data models first, then compatible
+          files from LOCALDICTATE_MODEL_DIR when set.
         </p>
       </article>
 
