@@ -36,8 +36,8 @@ use crate::{
 
 /// Trailing continuous silence that finalizes an in-progress segment. Long
 /// enough to be a natural phrase pause, short enough that the tail left at
-/// stop time stays small.
-const SEGMENT_SILENCE_MS: u64 = 500;
+/// stop time stays small and the live transcript streams promptly.
+const SEGMENT_SILENCE_MS: u64 = 350;
 /// Hard cap on segment length, comfortably inside Whisper's 30 s window.
 const SEGMENT_MAX_MS: u64 = 25_000;
 /// Trailing silence appended to each segment WAV. Whisper tends to drop the
@@ -545,6 +545,12 @@ mod tests {
         vec![0.02; RATE as usize * ms / 1_000]
     }
 
+    /// Trailing silence included in a finalized segment: SEGMENT_SILENCE_MS
+    /// rounded up to the 20 ms chunk that crossed the threshold.
+    fn silence_marker_len() -> usize {
+        ((RATE as u64 * SEGMENT_SILENCE_MS / 1_000) as usize).div_ceil(CHUNK) * CHUNK
+    }
+
     /// Feeds samples in 20 ms chunks and collects every finalized segment.
     fn feed(segmenter: &mut Segmenter, samples: &[f32]) -> Vec<Vec<f32>> {
         samples
@@ -561,9 +567,10 @@ mod tests {
 
         let segments = feed(&mut segmenter, &audio);
 
-        // 1 s of speech plus exactly the 500 ms trailing-silence marker.
+        // 1 s of speech plus the trailing-silence marker, rounded up to the
+        // chunk that crossed the threshold.
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].len(), 16_000 + 8_000);
+        assert_eq!(segments[0].len(), 16_000 + silence_marker_len());
         assert!(segmenter.take_tail().is_none());
     }
 
@@ -614,9 +621,9 @@ mod tests {
         let segments = feed(&mut segmenter, &audio);
 
         // The leading second of silence is skipped entirely: the segment is
-        // just the speech plus the 500 ms trailing-silence marker.
+        // just the speech plus the trailing-silence marker.
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].len(), 16_000 + 8_000);
+        assert_eq!(segments[0].len(), 16_000 + silence_marker_len());
     }
 
     #[test]
