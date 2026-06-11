@@ -12,7 +12,7 @@ use crate::{
     output::{self, OutputResult},
     settings::AppSettings,
     stats::BasicStats,
-    transcript::Transcript,
+    transcript::{Transcript, TranscriptSearchResult},
 };
 
 pub struct BackendState {
@@ -97,6 +97,14 @@ pub fn update_settings(
         return Err(error);
     }
 
+    if previous.history_retention_days != settings.history_retention_days
+        || (!previous.history_enabled && settings.history_enabled)
+    {
+        state
+            .db()?
+            .enforce_history_retention(settings.history_retention_days)?;
+    }
+
     Ok(settings)
 }
 
@@ -122,7 +130,58 @@ pub fn list_recent_transcripts(
 }
 
 #[tauri::command]
+pub fn search_transcripts(
+    state: tauri::State<'_, BackendState>,
+    query: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<TranscriptSearchResult, CommandError> {
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    let offset = offset.unwrap_or_default();
+    state
+        .db()?
+        .search_transcripts(query.as_deref(), limit, offset)
+}
+
+#[tauri::command]
+pub fn get_transcript(
+    state: tauri::State<'_, BackendState>,
+    id: String,
+) -> Result<Option<Transcript>, CommandError> {
+    state.db()?.get_transcript_by_id(&id)
+}
+
+#[tauri::command]
+pub fn update_transcript(
+    state: tauri::State<'_, BackendState>,
+    id: String,
+    text: String,
+) -> Result<Transcript, CommandError> {
+    state.db()?.update_transcript(&id, &text)
+}
+
+#[tauri::command]
+pub fn delete_transcript(
+    state: tauri::State<'_, BackendState>,
+    id: String,
+) -> Result<(), CommandError> {
+    state.db()?.delete_transcript(&id)
+}
+
+#[tauri::command]
+pub fn clear_transcript_history(state: tauri::State<'_, BackendState>) -> Result<(), CommandError> {
+    state.db()?.clear_transcript_history()
+}
+
+#[tauri::command]
 pub fn get_basic_stats(state: tauri::State<'_, BackendState>) -> Result<BasicStats, CommandError> {
+    state.db()?.get_basic_stats()
+}
+
+#[tauri::command]
+pub fn refresh_basic_stats(
+    state: tauri::State<'_, BackendState>,
+) -> Result<BasicStats, CommandError> {
     state.db()?.get_basic_stats()
 }
 

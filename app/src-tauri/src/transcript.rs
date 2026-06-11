@@ -20,6 +20,15 @@ pub struct Transcript {
     pub transcription_latency_ms: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptSearchResult {
+    pub transcripts: Vec<Transcript>,
+    pub total: u32,
+    pub limit: u32,
+    pub offset: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptMetadata {
     pub word_count: u32,

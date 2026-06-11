@@ -73,6 +73,13 @@ export type Transcript = {
   transcriptionLatencyMs: number | null;
 };
 
+export type TranscriptSearchResult = {
+  transcripts: Transcript[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type OutputAction =
   | "save_only"
   | "copy_clipboard"
@@ -182,8 +189,40 @@ export function listRecentTranscripts({
   return invoke("list_recent_transcripts", { limit });
 }
 
+export function searchTranscripts({
+  query,
+  limit,
+  offset,
+}: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<TranscriptSearchResult> {
+  return invoke("search_transcripts", { query, limit, offset });
+}
+
+export function getTranscript(id: string): Promise<Transcript | null> {
+  return invoke("get_transcript", { id });
+}
+
+export function updateTranscript(id: string, text: string): Promise<Transcript> {
+  return invoke("update_transcript", { id, text });
+}
+
+export function deleteTranscript(id: string): Promise<void> {
+  return invoke("delete_transcript", { id });
+}
+
+export function clearTranscriptHistory(): Promise<void> {
+  return invoke("clear_transcript_history");
+}
+
 export function getBasicStats(): Promise<BasicStats> {
   return invoke("get_basic_stats");
+}
+
+export function refreshBasicStats(): Promise<BasicStats> {
+  return invoke("refresh_basic_stats");
 }
 
 export function commandErrorMessage(error: unknown): string {

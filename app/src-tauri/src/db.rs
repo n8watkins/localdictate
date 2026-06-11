@@ -8,7 +8,7 @@ use crate::{
     models::{ModelRecord, ModelStatus},
     settings::AppSettings,
     stats::BasicStats,
-    transcript::Transcript,
+    transcript::{metadata_for_text, Transcript, TranscriptSearchResult},
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
@@ -86,6 +86,84 @@ impl Database {
             .map_err(CommandError::database)
     }
 
+    pub fn search_transcripts(
+        &self,
+        query: Option<&str>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<TranscriptSearchResult, CommandError> {
+        let normalized_query = query.map(str::trim).filter(|query| !query.is_empty());
+
+        let (transcripts, total) = if let Some(query) = normalized_query {
+            let pattern = format!("%{}%", escape_like_query(query));
+            let total: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM transcripts
+                     WHERE text LIKE ?1 ESCAPE '\\'",
+                    [&pattern],
+                    |row| row.get(0),
+                )
+                .map_err(CommandError::database)?;
+
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT id, text, created_at, duration_ms, word_count, character_count,
+                            model_id, language, output_mode, paste_method, transcription_latency_ms
+                     FROM transcripts
+                     WHERE text LIKE ?1 ESCAPE '\\'
+                     ORDER BY created_at DESC
+                     LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(CommandError::database)?;
+
+            let rows = stmt
+                .query_map(params![pattern, limit, offset], transcript_from_row)
+                .map_err(CommandError::database)?;
+
+            (
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(CommandError::database)?,
+                total,
+            )
+        } else {
+            let total: i64 = self
+                .conn
+                .query_row("SELECT COUNT(*) FROM transcripts", [], |row| row.get(0))
+                .map_err(CommandError::database)?;
+
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT id, text, created_at, duration_ms, word_count, character_count,
+                            model_id, language, output_mode, paste_method, transcription_latency_ms
+                     FROM transcripts
+                     ORDER BY created_at DESC
+                     LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(CommandError::database)?;
+
+            let rows = stmt
+                .query_map(params![limit, offset], transcript_from_row)
+                .map_err(CommandError::database)?;
+
+            (
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(CommandError::database)?,
+                total,
+            )
+        };
+
+        Ok(TranscriptSearchResult {
+            transcripts,
+            total: total.max(0) as u32,
+            limit,
+            offset,
+        })
+    }
+
     pub fn get_last_transcript(&self) -> Result<Option<Transcript>, CommandError> {
         if let Some(value) = self.get_setting_value(LAST_TRANSCRIPT_BUFFER_KEY)? {
             if !value.trim().is_empty() {
@@ -131,6 +209,8 @@ impl Database {
         )?;
         if history_enabled {
             self.insert_transcript(transcript)?;
+            let settings = self.get_settings()?;
+            self.enforce_history_retention(settings.history_retention_days)?;
         }
         self.upsert_setting(LAST_TRANSCRIPT_ID_KEY, &transcript.id)?;
         Ok(())
@@ -316,6 +396,73 @@ impl Database {
             .map_err(CommandError::database)
     }
 
+    pub fn update_transcript(&self, id: &str, text: &str) -> Result<Transcript, CommandError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(CommandError::new(
+                "empty_transcript",
+                "Transcript text cannot be empty.",
+            ));
+        }
+
+        let Some(mut transcript) = self.get_transcript_by_id(id)? else {
+            return Err(transcript_not_found(id));
+        };
+
+        let metadata = metadata_for_text(text);
+        transcript.text = text.to_string();
+        transcript.word_count = metadata.word_count;
+        transcript.character_count = metadata.character_count;
+
+        self.conn
+            .execute(
+                "UPDATE transcripts
+                 SET text = ?2, word_count = ?3, character_count = ?4
+                 WHERE id = ?1",
+                params![
+                    id,
+                    &transcript.text,
+                    transcript.word_count,
+                    transcript.character_count
+                ],
+            )
+            .map_err(CommandError::database)?;
+
+        Ok(transcript)
+    }
+
+    pub fn delete_transcript(&self, id: &str) -> Result<(), CommandError> {
+        self.conn
+            .execute("DELETE FROM transcripts WHERE id = ?1", [id])
+            .map_err(CommandError::database)?;
+        Ok(())
+    }
+
+    pub fn clear_transcript_history(&self) -> Result<(), CommandError> {
+        self.conn
+            .execute("DELETE FROM transcripts", [])
+            .map_err(CommandError::database)?;
+        Ok(())
+    }
+
+    pub fn enforce_history_retention(
+        &self,
+        retention_days: Option<u16>,
+    ) -> Result<(), CommandError> {
+        let Some(retention_days) = retention_days else {
+            return Ok(());
+        };
+
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(retention_days));
+        self.conn
+            .execute(
+                "DELETE FROM transcripts WHERE created_at < ?1",
+                [cutoff.to_rfc3339()],
+            )
+            .map_err(CommandError::database)?;
+        Ok(())
+    }
+
     fn get_setting_value(&self, key: &str) -> Result<Option<String>, CommandError> {
         self.conn
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
@@ -404,6 +551,20 @@ where
     value.and_then(|value| serde_json::from_value(serde_json::Value::String(value)).ok())
 }
 
+fn escape_like_query(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn transcript_not_found(id: &str) -> CommandError {
+    CommandError::new(
+        "transcript_not_found",
+        format!("Transcript {} was not found in local history.", id),
+    )
+}
+
 fn average_for(total: Option<i64>, count: u32) -> Option<f64> {
     if count == 0 {
         None
@@ -416,6 +577,17 @@ fn average_for(total: Option<i64>, count: u32) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::transcript::Transcript;
+    use chrono::Duration;
+
+    fn transcript_with_text(text: &str) -> Transcript {
+        Transcript::new_last_buffer(
+            text,
+            Some(1200),
+            Some("small.en-q5_1".to_string()),
+            Some("en".to_string()),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn settings_round_trip_through_database() {
@@ -466,5 +638,93 @@ mod tests {
             "Buffer only"
         );
         assert!(db.list_recent_transcripts(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_transcripts_filters_and_paginates_history_rows() {
+        let db = Database::in_memory().unwrap();
+        let first = transcript_with_text("Alpha meeting notes");
+        let second = transcript_with_text("Beta alpha follow up");
+        let third = transcript_with_text("Unrelated transcript");
+
+        db.save_last_transcript(&first).unwrap();
+        db.save_last_transcript(&second).unwrap();
+        db.save_last_transcript(&third).unwrap();
+
+        let result = db
+            .search_transcripts(Some("alpha"), 1, 0)
+            .expect("search should work");
+
+        assert_eq!(result.total, 2);
+        assert_eq!(result.limit, 1);
+        assert_eq!(result.offset, 0);
+        assert_eq!(result.transcripts.len(), 1);
+
+        let second_page = db.search_transcripts(Some("alpha"), 1, 1).unwrap();
+        assert_eq!(second_page.total, 2);
+        assert_eq!(second_page.transcripts.len(), 1);
+    }
+
+    #[test]
+    fn update_delete_and_clear_history_are_reflected_in_stats() {
+        let db = Database::in_memory().unwrap();
+        let first = transcript_with_text("one two three");
+        let second = transcript_with_text("four five");
+
+        db.save_last_transcript(&first).unwrap();
+        db.save_last_transcript(&second).unwrap();
+        assert_eq!(db.get_basic_stats().unwrap().total_words_transcribed, 5);
+
+        let updated = db.update_transcript(&first.id, "one").unwrap();
+        assert_eq!(updated.word_count, 1);
+        assert_eq!(db.get_basic_stats().unwrap().total_words_transcribed, 3);
+
+        db.delete_transcript(&second.id).unwrap();
+        assert_eq!(db.get_basic_stats().unwrap().total_words_transcribed, 1);
+
+        db.clear_transcript_history().unwrap();
+        assert_eq!(db.get_basic_stats().unwrap(), BasicStats::default());
+    }
+
+    #[test]
+    fn retention_removes_old_history_without_clearing_last_buffer() {
+        let db = Database::in_memory().unwrap();
+        let old = transcript_with_text("old transcript");
+        let recent = transcript_with_text("recent transcript");
+
+        db.save_last_transcript(&old).unwrap();
+        db.conn
+            .execute(
+                "UPDATE transcripts SET created_at = ?2 WHERE id = ?1",
+                params![old.id, (Utc::now() - Duration::days(45)).to_rfc3339()],
+            )
+            .unwrap();
+
+        db.save_last_transcript(&recent).unwrap();
+        db.enforce_history_retention(Some(30)).unwrap();
+
+        let result = db.search_transcripts(None, 10, 0).unwrap();
+        assert_eq!(result.total, 1);
+        assert_eq!(result.transcripts[0].id, recent.id);
+        assert_eq!(db.get_last_transcript().unwrap().unwrap().id, recent.id);
+    }
+
+    #[test]
+    fn retention_null_keeps_history_rows() {
+        let db = Database::in_memory().unwrap();
+        let old = transcript_with_text("old transcript");
+
+        db.save_last_transcript(&old).unwrap();
+        db.conn
+            .execute(
+                "UPDATE transcripts SET created_at = ?2 WHERE id = ?1",
+                params![old.id, (Utc::now() - Duration::days(45)).to_rfc3339()],
+            )
+            .unwrap();
+
+        db.enforce_history_retention(None).unwrap();
+
+        assert_eq!(db.search_transcripts(None, 10, 0).unwrap().total, 1);
+        assert_eq!(db.get_last_transcript().unwrap().unwrap().id, old.id);
     }
 }

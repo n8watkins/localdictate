@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Archive,
@@ -36,10 +30,16 @@ import {
 } from "lucide-react";
 import {
   clearLastTranscript,
+  clearTranscriptHistory,
   commandErrorMessage,
   copyLastTranscript,
+  copyTranscript,
+  deleteTranscript,
   getDashboardData,
   pasteLastTranscript,
+  pasteTranscript,
+  searchTranscripts,
+  updateTranscript,
   updateSettings,
   type AppSettings,
   type AppStateSnapshot,
@@ -228,6 +228,7 @@ function App() {
         setDashboardData((current) =>
           current ? { ...current, settings: savedSettings } : current,
         );
+        await refresh();
       } catch (error) {
         setDashboardData((current) =>
           current ? { ...current, settings: previousSettings } : current,
@@ -237,7 +238,7 @@ function App() {
         setSavingSettings(false);
       }
     },
-    [dashboardData],
+    [dashboardData, refresh],
   );
 
   const handleClearLastTranscript = useCallback(async () => {
@@ -607,17 +608,175 @@ function HistoryView({
   data: DashboardData;
 }) {
   const [query, setQuery] = useState("");
-  const { recentTranscripts, settings } = data;
-  const filteredTranscripts = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return recentTranscripts;
+  const [offset, setOffset] = useState(0);
+  const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  const [total, setTotal] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [busyTranscriptId, setBusyTranscriptId] = useState<string | null>(null);
+  const [clearingHistory, setClearingHistory] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const { settings } = data;
+  const pageSize = 10;
+
+  const loadHistory = useCallback(
+    async (nextOffset: number) => {
+      setHistoryLoading(true);
+      setHistoryError(null);
+
+      try {
+        let result = await searchTranscripts({
+          query: query.trim() || undefined,
+          limit: pageSize,
+          offset: nextOffset,
+        });
+        if (
+          result.total > 0 &&
+          result.transcripts.length === 0 &&
+          nextOffset > 0
+        ) {
+          result = await searchTranscripts({
+            query: query.trim() || undefined,
+            limit: pageSize,
+            offset: Math.max(0, nextOffset - pageSize),
+          });
+        }
+
+        setTranscripts(result.transcripts);
+        setTotal(result.total);
+        setOffset(result.offset);
+      } catch (error) {
+        setHistoryError(commandErrorMessage(error));
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [query],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadHistory(0);
+    }, 180);
+
+    return () => window.clearTimeout(timer);
+  }, [loadHistory]);
+
+  const refreshAfterMutation = useCallback(async () => {
+    await actions.refresh();
+    await loadHistory(offset);
+  }, [actions, loadHistory, offset]);
+
+  const handlePasteTranscript = useCallback(
+    async (id: string) => {
+      setBusyTranscriptId(id);
+      setHistoryError(null);
+
+      try {
+        const result = await pasteTranscript(id);
+        if (result.clipboardRestoreError) {
+          setHistoryError(result.clipboardRestoreError);
+        }
+        await refreshAfterMutation();
+      } catch (error) {
+        setHistoryError(commandErrorMessage(error));
+      } finally {
+        setBusyTranscriptId(null);
+      }
+    },
+    [refreshAfterMutation],
+  );
+
+  const handleCopyTranscript = useCallback(
+    async (id: string) => {
+      setBusyTranscriptId(id);
+      setHistoryError(null);
+
+      try {
+        await copyTranscript(id);
+        await refreshAfterMutation();
+      } catch (error) {
+        setHistoryError(commandErrorMessage(error));
+      } finally {
+        setBusyTranscriptId(null);
+      }
+    },
+    [refreshAfterMutation],
+  );
+
+  const startEdit = useCallback((transcript: Transcript) => {
+    setEditingId(transcript.id);
+    setEditText(transcript.text);
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditText("");
+  }, []);
+
+  const saveEdit = useCallback(
+    async (id: string) => {
+      setBusyTranscriptId(id);
+      setHistoryError(null);
+
+      try {
+        await updateTranscript(id, editText);
+        cancelEdit();
+        await refreshAfterMutation();
+      } catch (error) {
+        setHistoryError(commandErrorMessage(error));
+      } finally {
+        setBusyTranscriptId(null);
+      }
+    },
+    [cancelEdit, editText, refreshAfterMutation],
+  );
+
+  const handleDeleteTranscript = useCallback(
+    async (id: string) => {
+      if (!window.confirm("Delete this transcript from local history?")) {
+        return;
+      }
+
+      setBusyTranscriptId(id);
+      setHistoryError(null);
+
+      try {
+        await deleteTranscript(id);
+        await refreshAfterMutation();
+      } catch (error) {
+        setHistoryError(commandErrorMessage(error));
+      } finally {
+        setBusyTranscriptId(null);
+      }
+    },
+    [refreshAfterMutation],
+  );
+
+  const handleClearHistory = useCallback(async () => {
+    if (!window.confirm("Clear all saved transcript history?")) {
+      return;
     }
 
-    return recentTranscripts.filter((transcript) =>
-      transcript.text.toLowerCase().includes(normalizedQuery),
-    );
-  }, [query, recentTranscripts]);
+    setClearingHistory(true);
+    setHistoryError(null);
+
+    try {
+      await clearTranscriptHistory();
+      setOffset(0);
+      await refreshAfterMutation();
+    } catch (error) {
+      setHistoryError(commandErrorMessage(error));
+    } finally {
+      setClearingHistory(false);
+    }
+  }, [refreshAfterMutation]);
+
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + pageSize, total);
+  const hasPrevious = offset > 0;
+  const hasNext = offset + pageSize < total;
 
   return (
     <section className="view-grid">
@@ -650,9 +809,14 @@ function HistoryView({
             <option value="365">365 day retention</option>
             <option value="forever">Forever</option>
           </select>
-          <button className="secondary-button" disabled type="button">
+          <button
+            className="secondary-button"
+            disabled={clearingHistory || total === 0}
+            onClick={() => void handleClearHistory()}
+            type="button"
+          >
             <Trash2 aria-hidden="true" size={15} />
-            Clear all pending
+            {clearingHistory ? "Clearing..." : "Clear all"}
           </button>
         </div>
       </article>
@@ -662,22 +826,62 @@ function HistoryView({
           <h2>Transcript archive</h2>
           <Archive aria-hidden="true" size={16} />
           <span className="muted">
-            {filteredTranscripts.length} local records
+            {pageStart}-{pageEnd} of {total} local records
           </span>
         </div>
-        {settings.historyEnabled ? null : (
-          <EmptyState message="History is disabled. The Last Transcript Buffer can still hold the most recent result." />
-        )}
-        {settings.historyEnabled && filteredTranscripts.length === 0 ? (
+        {historyError ? (
+          <InlineError message={historyError} onRetry={() => loadHistory(offset)} />
+        ) : null}
+        {!settings.historyEnabled ? (
+          <EmptyState message="History is disabled. Existing records remain available until you delete them." />
+        ) : null}
+        {historyLoading ? (
+          <div className="pending-panel">
+            <RefreshCw aria-hidden="true" size={16} />
+            <span>Loading transcript history...</span>
+          </div>
+        ) : null}
+        {!historyLoading && transcripts.length === 0 ? (
           <EmptyState message="No local transcript records match this view yet." />
         ) : null}
-        {settings.historyEnabled && filteredTranscripts.length > 0 ? (
+        {!historyLoading && transcripts.length > 0 ? (
           <div className="transcript-list">
-            {filteredTranscripts.map((item) => (
-              <TranscriptRow item={item} key={item.id} variant="full" />
+            {transcripts.map((item) => (
+              <TranscriptRow
+                busy={busyTranscriptId === item.id}
+                editText={editingId === item.id ? editText : undefined}
+                item={item}
+                key={item.id}
+                onCancelEdit={cancelEdit}
+                onCopy={handleCopyTranscript}
+                onDelete={handleDeleteTranscript}
+                onEdit={startEdit}
+                onEditTextChange={setEditText}
+                onPaste={handlePasteTranscript}
+                onSaveEdit={saveEdit}
+                variant="full"
+              />
             ))}
           </div>
         ) : null}
+        <div className="pagination-row">
+          <button
+            className="secondary-button"
+            disabled={!hasPrevious || historyLoading}
+            onClick={() => void loadHistory(Math.max(0, offset - pageSize))}
+            type="button"
+          >
+            Previous
+          </button>
+          <button
+            className="secondary-button"
+            disabled={!hasNext || historyLoading}
+            onClick={() => void loadHistory(offset + pageSize)}
+            type="button"
+          >
+            Next
+          </button>
+        </div>
       </article>
     </section>
   );
@@ -1527,19 +1731,47 @@ function SettingRow({
 }
 
 function TranscriptRow({
+  busy = false,
+  editText,
   item,
+  onCancelEdit,
+  onCopy,
+  onDelete,
+  onEdit,
+  onEditTextChange,
+  onPaste,
+  onSaveEdit,
   variant,
 }: {
+  busy?: boolean;
+  editText?: string;
   item: Transcript;
+  onCancelEdit?: () => void;
+  onCopy?: (id: string) => Promise<void>;
+  onDelete?: (id: string) => Promise<void>;
+  onEdit?: (transcript: Transcript) => void;
+  onEditTextChange?: (text: string) => void;
+  onPaste?: (id: string) => Promise<void>;
+  onSaveEdit?: (id: string) => Promise<void>;
   variant: "compact" | "full";
 }) {
   const isFull = variant === "full";
+  const isEditing = editText !== undefined;
 
   return (
     <div className={isFull ? "history-row" : "transcript-row"}>
       <div>
         <strong>{transcriptTitle(item)}</strong>
-        <p>{item.text}</p>
+        {isEditing ? (
+          <textarea
+            aria-label="Edit transcript text"
+            className="history-edit"
+            onChange={(event) => onEditTextChange?.(event.currentTarget.value)}
+            value={editText}
+          />
+        ) : (
+          <p>{item.text}</p>
+        )}
         <span>{transcriptMeta(item)}</span>
       </div>
       <div className="row-actions">
@@ -1550,31 +1782,64 @@ function TranscriptRow({
         ) : null}
         <button
           className={isFull ? "ghost-button" : "compact-action"}
-          disabled
+          disabled={busy || !onPaste}
+          onClick={() => void onPaste?.(item.id)}
           type="button"
         >
           <ClipboardPaste aria-hidden="true" size={15} />
-          Insert pending
+          {busy ? "Working..." : "Insert"}
         </button>
         <button
           className={isFull ? "ghost-button" : "compact-action"}
-          disabled
+          disabled={busy || !onCopy}
+          onClick={() => void onCopy?.(item.id)}
           type="button"
         >
           <Copy aria-hidden="true" size={15} />
-          Copy pending
+          Copy
         </button>
         {isFull ? (
-          <>
-            <button className="ghost-button" disabled type="button">
-              <Pencil aria-hidden="true" size={15} />
-              Edit pending
-            </button>
-            <button className="ghost-button danger" disabled type="button">
-              <Trash2 aria-hidden="true" size={15} />
-              Delete pending
-            </button>
-          </>
+          isEditing ? (
+            <>
+              <button
+                className="secondary-button"
+                disabled={busy || !editText.trim()}
+                onClick={() => void onSaveEdit?.(item.id)}
+                type="button"
+              >
+                Save
+              </button>
+              <button
+                className="ghost-button"
+                disabled={busy}
+                onClick={onCancelEdit}
+                type="button"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="ghost-button"
+                disabled={busy || !onEdit}
+                onClick={() => onEdit?.(item)}
+                type="button"
+              >
+                <Pencil aria-hidden="true" size={15} />
+                Edit
+              </button>
+              <button
+                className="ghost-button danger"
+                disabled={busy || !onDelete}
+                onClick={() => void onDelete?.(item.id)}
+                type="button"
+              >
+                <Trash2 aria-hidden="true" size={15} />
+                Delete
+              </button>
+            </>
+          )
         ) : null}
       </div>
     </div>

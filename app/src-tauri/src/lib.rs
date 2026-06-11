@@ -36,6 +36,7 @@ pub fn run() {
             std::fs::create_dir_all(&audio_temp_dir)?;
             let db = Database::open(app_data_dir.join("localdictate.sqlite3"))?;
             let settings = db.get_settings()?;
+            db.enforce_history_retention(settings.history_retention_days)?;
             app.manage(BackendState::new(db, audio_temp_dir));
             hotkeys::setup(app.handle(), &settings.hotkeys)?;
             tray::setup(app.handle())?;
@@ -48,7 +49,13 @@ pub fn run() {
             commands::get_last_transcript,
             commands::clear_last_transcript,
             commands::list_recent_transcripts,
+            commands::search_transcripts,
+            commands::get_transcript,
+            commands::update_transcript,
+            commands::delete_transcript,
+            commands::clear_transcript_history,
             commands::get_basic_stats,
+            commands::refresh_basic_stats,
             commands::get_hotkey_status,
             commands::rebind_hotkey,
             commands::reset_hotkeys_to_defaults,
