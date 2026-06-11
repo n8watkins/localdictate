@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use serde::Serialize;
@@ -96,10 +99,76 @@ pub struct HotkeyBindingStatus {
     pub error: Option<String>,
 }
 
+/// A shortcut made up exclusively of modifier keys (e.g. "Ctrl+Shift").
+/// The global-shortcut plugin cannot register these because they have no key
+/// code, so on Windows a polling watcher thread drives them instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ModifierChord {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub win: bool,
+}
+
+impl ModifierChord {
+    fn is_empty(self) -> bool {
+        !(self.ctrl || self.shift || self.alt || self.win)
+    }
+
+    /// Canonical user-facing label, e.g. "Ctrl+Shift" or "Ctrl+Alt+Win".
+    pub fn label(self) -> String {
+        let mut parts = Vec::new();
+        if self.ctrl {
+            parts.push("Ctrl");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.win {
+            parts.push("Win");
+        }
+        parts.join("+")
+    }
+}
+
+/// Either a shortcut the global-shortcut plugin can register, or a
+/// modifier-only chord handled by the Windows chord watcher.
+#[derive(Debug, Clone, Copy)]
+pub enum ParsedShortcut {
+    Plugin(Shortcut),
+    ModifierChord(ModifierChord),
+}
+
+impl ParsedShortcut {
+    fn binding_key(&self) -> BindingKey {
+        match self {
+            Self::Plugin(shortcut) => BindingKey::Plugin(shortcut.id()),
+            Self::ModifierChord(chord) => BindingKey::Chord(*chord),
+        }
+    }
+}
+
+/// Identity used for duplicate detection across both shortcut kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BindingKey {
+    Plugin(u32),
+    Chord(ModifierChord),
+}
+
+struct ChordWatcherHandle {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
 #[derive(Default)]
 pub struct HotkeyRuntimeState {
     actions_by_id: Mutex<HashMap<u32, HotkeyAction>>,
     pressed_actions: Mutex<HashSet<HotkeyAction>>,
+    chord_bindings: Mutex<Vec<(ModifierChord, HotkeyAction)>>,
+    chord_watcher: Mutex<Option<ChordWatcherHandle>>,
 }
 
 impl HotkeyRuntimeState {
@@ -132,6 +201,26 @@ impl HotkeyRuntimeState {
             .lock()
             .map(|mut pressed| pressed.remove(&action))
             .unwrap_or(false)
+    }
+
+    fn chord_is_registered(&self, chord: ModifierChord) -> bool {
+        self.chord_bindings
+            .lock()
+            .map(|bindings| bindings.iter().any(|(bound, _)| *bound == chord))
+            .unwrap_or(false)
+    }
+
+    fn store_chord_bindings(&self, bindings: Vec<(ModifierChord, HotkeyAction)>) {
+        if let Ok(mut stored) = self.chord_bindings.lock() {
+            *stored = bindings;
+        }
+    }
+
+    fn take_watcher(&self) -> Option<ChordWatcherHandle> {
+        self.chord_watcher
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
     }
 }
 
@@ -171,13 +260,13 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
 }
 
 pub fn validate_hotkeys(hotkeys: &HotkeySettings) -> Result<(), CommandError> {
-    let mut seen = HashMap::<u32, HotkeyAction>::new();
+    let mut seen = HashMap::<BindingKey, HotkeyAction>::new();
 
     for action in HOTKEY_ACTIONS {
         let shortcut = action.shortcut(hotkeys);
         let parsed = parse_shortcut(shortcut)?;
 
-        if let Some(previous_action) = seen.insert(parsed.id(), action) {
+        if let Some(previous_action) = seen.insert(parsed.binding_key(), action) {
             return Err(CommandError::new(
                 "duplicate_hotkey",
                 format!(
@@ -200,28 +289,9 @@ pub fn replace_hotkeys(
 
     unregister_hotkey_set(app, previous);
 
-    let mut registered = Vec::<Shortcut>::new();
-    let mut actions_by_id = HashMap::<u32, HotkeyAction>::new();
-
-    for action in HOTKEY_ACTIONS {
-        let shortcut_text = action.shortcut(next);
-        let shortcut = parse_shortcut(shortcut_text)?;
-
-        if let Err(error) = app.global_shortcut().register(shortcut) {
-            unregister_shortcuts(app, &registered);
-            let _ = restore_previous_hotkeys(app, previous);
-            return Err(CommandError::hotkey_registration_failed(
-                shortcut_text,
-                error,
-            ));
-        }
-
-        actions_by_id.insert(shortcut.id(), action);
-        registered.push(shortcut);
-    }
-
-    if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
-        runtime.replace_bindings(actions_by_id);
+    if let Err(error) = register_hotkey_set(app, next) {
+        let _ = register_hotkey_set(app, previous);
+        return Err(error);
     }
 
     Ok(())
@@ -229,31 +299,108 @@ pub fn replace_hotkeys(
 
 fn register_initial_hotkeys(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandError> {
     validate_hotkeys(hotkeys)?;
+    register_hotkey_set(app, hotkeys)
+}
 
+/// Registers every binding in `hotkeys`: plugin shortcuts through the
+/// global-shortcut plugin, modifier-only chords through the Windows chord
+/// watcher. On failure all plugin shortcuts registered so far are rolled back
+/// and the chord watcher is left untouched.
+fn register_hotkey_set(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandError> {
     let mut registered = Vec::<Shortcut>::new();
     let mut actions_by_id = HashMap::<u32, HotkeyAction>::new();
+    let mut chord_bindings = Vec::<(ModifierChord, HotkeyAction)>::new();
 
     for action in HOTKEY_ACTIONS {
         let shortcut_text = action.shortcut(hotkeys);
-        let shortcut = parse_shortcut(shortcut_text)?;
 
-        if let Err(error) = app.global_shortcut().register(shortcut) {
-            unregister_shortcuts(app, &registered);
-            return Err(CommandError::hotkey_registration_failed(
-                shortcut_text,
-                error,
-            ));
+        match parse_shortcut(shortcut_text)? {
+            ParsedShortcut::Plugin(shortcut) => {
+                if let Err(error) = app.global_shortcut().register(shortcut) {
+                    unregister_shortcuts(app, &registered);
+                    return Err(CommandError::hotkey_registration_failed(
+                        shortcut_text,
+                        error,
+                    ));
+                }
+
+                actions_by_id.insert(shortcut.id(), action);
+                registered.push(shortcut);
+            }
+            ParsedShortcut::ModifierChord(chord) => {
+                if !cfg!(windows) {
+                    unregister_shortcuts(app, &registered);
+                    return Err(CommandError::new(
+                        "hotkey_registration_failed",
+                        format!(
+                            "Could not register {}. Modifier-only shortcuts are only supported on Windows.",
+                            shortcut_text
+                        ),
+                    ));
+                }
+
+                chord_bindings.push((chord, action));
+            }
         }
-
-        actions_by_id.insert(shortcut.id(), action);
-        registered.push(shortcut);
     }
 
     if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
         runtime.replace_bindings(actions_by_id);
     }
 
+    configure_chord_watcher(app, chord_bindings);
+
     Ok(())
+}
+
+/// Stops any running chord watcher thread, stores the new chord bindings (so
+/// status() can report them as registered), and starts a fresh watcher thread
+/// when there is at least one chord to monitor. Called on initial
+/// registration and on every rebind/reset/replace.
+fn configure_chord_watcher(app: &AppHandle, bindings: Vec<(ModifierChord, HotkeyAction)>) {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return;
+    };
+
+    if let Some(watcher) = runtime.take_watcher() {
+        watcher.stop.store(true, Ordering::SeqCst);
+        let _ = watcher.thread.join();
+    }
+
+    runtime.store_chord_bindings(bindings.clone());
+
+    if bindings.is_empty() {
+        return;
+    }
+
+    #[cfg(windows)]
+    {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let app_handle = app.clone();
+        let spawned = std::thread::Builder::new()
+            .name("localdictate-chord-watcher".to_string())
+            .spawn(move || windows_chord::run_watcher(app_handle, bindings, thread_stop));
+
+        match spawned {
+            Ok(thread) => {
+                if let Ok(mut guard) = runtime.chord_watcher.lock() {
+                    *guard = Some(ChordWatcherHandle { stop, thread });
+                }
+            }
+            Err(error) => {
+                eprintln!("Failed to start chord watcher thread: {}", error);
+                runtime.store_chord_bindings(Vec::new());
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        // Modifier-only chords are rejected during registration on
+        // non-Windows platforms, so this branch never sees a non-empty set.
+        runtime.store_chord_bindings(Vec::new());
+    }
 }
 
 pub fn status(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<HotkeyStatus, CommandError> {
@@ -262,11 +409,24 @@ pub fn status(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<HotkeyStatus,
     for action in HOTKEY_ACTIONS {
         let shortcut = action.shortcut(hotkeys);
         let (normalized_shortcut, registered, error) = match parse_shortcut(shortcut) {
-            Ok(parsed) => (
+            Ok(ParsedShortcut::Plugin(parsed)) => (
                 Some(parsed.to_string()),
                 app.global_shortcut().is_registered(parsed),
                 None,
             ),
+            Ok(ParsedShortcut::ModifierChord(chord)) => {
+                let registered = app
+                    .try_state::<HotkeyRuntimeState>()
+                    .map(|runtime| runtime.chord_is_registered(chord))
+                    .unwrap_or(false);
+                let error = if cfg!(windows) {
+                    None
+                } else {
+                    Some("Modifier-only shortcuts are only supported on Windows.".to_string())
+                };
+
+                (Some(chord.label()), registered, error)
+            }
             Err(error) => (None, false, Some(error.message)),
         };
 
@@ -343,32 +503,13 @@ fn recording_mode_allows(app: &AppHandle, predicate: impl FnOnce(RecordingMode) 
         .unwrap_or(false)
 }
 
-fn restore_previous_hotkeys(
-    app: &AppHandle,
-    previous: &HotkeySettings,
-) -> Result<(), CommandError> {
-    let mut actions_by_id = HashMap::<u32, HotkeyAction>::new();
-
-    for action in HOTKEY_ACTIONS {
-        let shortcut_text = action.shortcut(previous);
-        let shortcut = parse_shortcut(shortcut_text)?;
-        app.global_shortcut()
-            .register(shortcut)
-            .map_err(|error| CommandError::hotkey_registration_failed(shortcut_text, error))?;
-        actions_by_id.insert(shortcut.id(), action);
-    }
-
-    if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
-        runtime.replace_bindings(actions_by_id);
-    }
-
-    Ok(())
-}
-
 fn unregister_hotkey_set(app: &AppHandle, hotkeys: &HotkeySettings) {
     let shortcuts = HOTKEY_ACTIONS
         .into_iter()
-        .filter_map(|action| parse_shortcut(action.shortcut(hotkeys)).ok())
+        .filter_map(|action| match parse_shortcut(action.shortcut(hotkeys)) {
+            Ok(ParsedShortcut::Plugin(shortcut)) => Some(shortcut),
+            _ => None,
+        })
         .collect::<Vec<_>>();
 
     unregister_shortcuts(app, &shortcuts);
@@ -382,9 +523,43 @@ fn unregister_shortcuts(app: &AppHandle, shortcuts: &[Shortcut]) {
     }
 }
 
-fn parse_shortcut(shortcut: &str) -> Result<Shortcut, CommandError> {
+pub fn parse_shortcut(shortcut: &str) -> Result<ParsedShortcut, CommandError> {
+    if let Some(chord) = parse_modifier_chord(shortcut) {
+        return Ok(ParsedShortcut::ModifierChord(chord));
+    }
+
     let normalized = normalize_shortcut(shortcut);
-    Shortcut::from_str(&normalized).map_err(|error| CommandError::invalid_hotkey(shortcut, error))
+    Shortcut::from_str(&normalized)
+        .map(ParsedShortcut::Plugin)
+        .map_err(|error| CommandError::invalid_hotkey(shortcut, error))
+}
+
+/// Returns Some when every +-separated token is a modifier name
+/// (case-insensitive): Ctrl/Control, Shift, Alt/Option,
+/// Win/Windows/Super/Meta/Cmd/Command. Anything else (including empty
+/// strings or trailing '+') falls through to the plugin parser.
+fn parse_modifier_chord(shortcut: &str) -> Option<ModifierChord> {
+    if shortcut.trim().is_empty() {
+        return None;
+    }
+
+    let mut chord = ModifierChord::default();
+
+    for token in shortcut.split('+') {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => chord.ctrl = true,
+            "shift" => chord.shift = true,
+            "alt" | "option" => chord.alt = true,
+            "win" | "windows" | "super" | "meta" | "cmd" | "command" => chord.win = true,
+            _ => return None,
+        }
+    }
+
+    if chord.is_empty() {
+        None
+    } else {
+        Some(chord)
+    }
 }
 
 fn normalize_shortcut(shortcut: &str) -> String {
@@ -393,21 +568,306 @@ fn normalize_shortcut(shortcut: &str) -> String {
         .map(|token| match token.trim().to_ascii_lowercase().as_str() {
             "win" | "windows" | "meta" => "Super".to_string(),
             "control" => "Ctrl".to_string(),
+            "~" | "`" | "tilde" | "backquote" => "Backquote".to_string(),
             other => other.to_string(),
         })
         .collect::<Vec<_>>()
         .join("+")
 }
 
+#[cfg(windows)]
+fn dispatch_chord_pressed(app: &AppHandle, action: HotkeyAction) {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return;
+    };
+    if !runtime.mark_pressed_once(action) {
+        return;
+    }
+    handle_pressed(app, action);
+}
+
+#[cfg(windows)]
+fn dispatch_chord_released(app: &AppHandle, action: HotkeyAction) {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return;
+    };
+    if !runtime.mark_released_once(action) {
+        return;
+    }
+    handle_released(app, action);
+}
+
+#[cfg(windows)]
+mod windows_chord {
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use tauri::AppHandle;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+        VK_PACKET, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
+
+    use super::{dispatch_chord_pressed, dispatch_chord_released, HotkeyAction, ModifierChord};
+
+    const POLL_INTERVAL: Duration = Duration::from_millis(30);
+    const ARMING_DELAY: Duration = Duration::from_millis(150);
+    /// 0x01..=0x06 are mouse buttons (VK_LBUTTON..VK_XBUTTON2); start above.
+    const FIRST_SCANNED_VK: u16 = 0x08;
+    const LAST_SCANNED_VK: u16 = 0xFE;
+
+    #[derive(Debug, Clone, Copy)]
+    enum ChordState {
+        /// Waiting for the chord modifiers to be held down.
+        Idle,
+        /// Chord is down; firing at the deadline unless another key shows up.
+        Arming(Instant),
+        /// handle_pressed has fired; waiting for a modifier release.
+        Active,
+        /// Aborted or finished; waiting for all chord modifiers to be
+        /// released before re-arming.
+        Suppressed,
+    }
+
+    pub(super) fn run_watcher(
+        app: AppHandle,
+        bindings: Vec<(ModifierChord, HotkeyAction)>,
+        stop: Arc<AtomicBool>,
+    ) {
+        let mut states = vec![ChordState::Idle; bindings.len()];
+
+        while !stop.load(Ordering::SeqCst) {
+            let snapshot = ModifierSnapshot::capture();
+
+            for (index, (chord, action)) in bindings.iter().enumerate() {
+                states[index] = step(&app, *chord, *action, states[index], snapshot);
+            }
+
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn step(
+        app: &AppHandle,
+        chord: ModifierChord,
+        action: HotkeyAction,
+        state: ChordState,
+        snapshot: ModifierSnapshot,
+    ) -> ChordState {
+        match state {
+            ChordState::Idle => {
+                if snapshot.exactly(chord) {
+                    ChordState::Arming(Instant::now() + ARMING_DELAY)
+                } else {
+                    ChordState::Idle
+                }
+            }
+            ChordState::Arming(deadline) => {
+                if !snapshot.holds_all(chord) {
+                    // Chord released before the arming delay elapsed.
+                    ChordState::Idle
+                } else if !snapshot.exactly(chord) {
+                    // An extra modifier joined; this is some other chord.
+                    ChordState::Suppressed
+                } else if non_modifier_key_down() {
+                    // The user was typing a normal shortcut like Ctrl+Shift+T.
+                    ChordState::Suppressed
+                } else if Instant::now() >= deadline {
+                    dispatch_chord_pressed(app, action);
+                    ChordState::Active
+                } else {
+                    ChordState::Arming(deadline)
+                }
+            }
+            ChordState::Active => {
+                if !snapshot.holds_all(chord) {
+                    dispatch_chord_released(app, action);
+                    ChordState::Suppressed
+                } else {
+                    ChordState::Active
+                }
+            }
+            ChordState::Suppressed => {
+                if snapshot.holds_any(chord) {
+                    ChordState::Suppressed
+                } else {
+                    ChordState::Idle
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct ModifierSnapshot {
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        win: bool,
+    }
+
+    impl ModifierSnapshot {
+        fn capture() -> Self {
+            Self {
+                ctrl: vk_down(VK_CONTROL.0),
+                shift: vk_down(VK_SHIFT.0),
+                alt: vk_down(VK_MENU.0),
+                win: vk_down(VK_LWIN.0) || vk_down(VK_RWIN.0),
+            }
+        }
+
+        /// Exactly the chord's modifiers are down, no more and no less.
+        fn exactly(self, chord: ModifierChord) -> bool {
+            self.ctrl == chord.ctrl
+                && self.shift == chord.shift
+                && self.alt == chord.alt
+                && self.win == chord.win
+        }
+
+        /// Every modifier in the chord is still down (extras allowed).
+        fn holds_all(self, chord: ModifierChord) -> bool {
+            (!chord.ctrl || self.ctrl)
+                && (!chord.shift || self.shift)
+                && (!chord.alt || self.alt)
+                && (!chord.win || self.win)
+        }
+
+        /// At least one modifier in the chord is still down.
+        fn holds_any(self, chord: ModifierChord) -> bool {
+            (chord.ctrl && self.ctrl)
+                || (chord.shift && self.shift)
+                || (chord.alt && self.alt)
+                || (chord.win && self.win)
+        }
+    }
+
+    fn vk_down(vk: u16) -> bool {
+        (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0
+    }
+
+    fn is_modifier_vk(vk: u16) -> bool {
+        [
+            VK_SHIFT,
+            VK_CONTROL,
+            VK_MENU,
+            VK_LWIN,
+            VK_RWIN,
+            VK_LSHIFT,
+            VK_RSHIFT,
+            VK_LCONTROL,
+            VK_RCONTROL,
+            VK_LMENU,
+            VK_RMENU,
+        ]
+        .iter()
+        .any(|modifier| modifier.0 == vk)
+    }
+
+    /// Scans the virtual-key range (skipping mouse buttons and modifiers) for
+    /// any currently held non-modifier key.
+    fn non_modifier_key_down() -> bool {
+        for vk in FIRST_SCANNED_VK..=LAST_SCANNED_VK {
+            if is_modifier_vk(vk) || vk == VK_PACKET.0 {
+                continue;
+            }
+
+            if vk_down(vk) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppSettings;
+
+    fn expect_plugin(shortcut: &str) -> Shortcut {
+        match parse_shortcut(shortcut).unwrap() {
+            ParsedShortcut::Plugin(parsed) => parsed,
+            other => panic!(
+                "expected plugin shortcut for {:?}, got {:?}",
+                shortcut, other
+            ),
+        }
+    }
+
+    fn expect_chord(shortcut: &str) -> ModifierChord {
+        match parse_shortcut(shortcut).unwrap() {
+            ParsedShortcut::ModifierChord(chord) => chord,
+            other => panic!(
+                "expected modifier chord for {:?}, got {:?}",
+                shortcut, other
+            ),
+        }
+    }
 
     #[test]
     fn normalizes_windows_modifier_for_global_hotkey_parser() {
-        let shortcut = parse_shortcut("Ctrl+Win+Space").unwrap();
+        let shortcut = expect_plugin("Ctrl+Win+Space");
 
         assert_eq!(shortcut.to_string(), "control+super+Space");
+    }
+
+    #[test]
+    fn parses_modifier_only_chords() {
+        let chord = expect_chord("Ctrl+Shift");
+        assert!(chord.ctrl && chord.shift && !chord.alt && !chord.win);
+        assert_eq!(chord.label(), "Ctrl+Shift");
+
+        let chord = expect_chord(" control + ALT ");
+        assert!(chord.ctrl && chord.alt && !chord.shift && !chord.win);
+        assert_eq!(chord.label(), "Ctrl+Alt");
+
+        let chord = expect_chord("Shift+Meta");
+        assert!(chord.shift && chord.win && !chord.ctrl && !chord.alt);
+        assert_eq!(chord.label(), "Shift+Win");
+
+        let chord = expect_chord("Win");
+        assert!(chord.win && !chord.ctrl && !chord.shift && !chord.alt);
+        assert_eq!(chord.label(), "Win");
+    }
+
+    #[test]
+    fn modifier_chord_parsing_is_case_insensitive_and_order_insensitive() {
+        assert_eq!(expect_chord("CTRL+SHIFT"), expect_chord("shift+ctrl"));
+        assert_eq!(expect_chord("Super+Ctrl"), expect_chord("ctrl+win"));
+    }
+
+    #[test]
+    fn rejects_empty_and_garbage_shortcuts() {
+        assert!(parse_shortcut("").is_err());
+        assert!(parse_shortcut("   ").is_err());
+        assert!(parse_shortcut("+").is_err());
+        assert!(parse_shortcut("Ctrl+").is_err());
+        assert!(parse_shortcut("Ctrl+NotAKey").is_err());
+        assert!(parse_shortcut("Bogus").is_err());
+    }
+
+    #[test]
+    fn shortcuts_with_a_key_are_not_modifier_chords() {
+        let shortcut = expect_plugin("Ctrl+Shift+T");
+
+        assert_eq!(shortcut.to_string(), "shift+control+KeyT");
+    }
+
+    #[test]
+    fn normalizes_tilde_aliases_to_backquote() {
+        for alias in ["~", "`", "tilde", "Tilde", "Backquote", "BACKQUOTE"] {
+            let shortcut = expect_plugin(alias);
+            assert_eq!(shortcut.to_string(), "Backquote", "alias {:?}", alias);
+        }
+
+        let shortcut = expect_plugin("Ctrl+~");
+        assert_eq!(shortcut.to_string(), "control+Backquote");
     }
 
     #[test]
@@ -420,5 +880,44 @@ mod tests {
         };
 
         assert!(validate_hotkeys(&hotkeys).is_err());
+    }
+
+    #[test]
+    fn detects_duplicate_modifier_chords_across_spellings() {
+        let hotkeys = HotkeySettings {
+            hold_to_talk: "Ctrl+Shift".to_string(),
+            toggle_dictation: "shift+control".to_string(),
+            paste_last_transcript: "Ctrl+Alt+V".to_string(),
+            open_dashboard: "Ctrl+Alt+D".to_string(),
+        };
+
+        assert!(validate_hotkeys(&hotkeys).is_err());
+    }
+
+    #[test]
+    fn modifier_chord_does_not_collide_with_plugin_shortcut() {
+        let hotkeys = HotkeySettings {
+            hold_to_talk: "Ctrl+Shift".to_string(),
+            toggle_dictation: "Ctrl+Shift+T".to_string(),
+            paste_last_transcript: "Ctrl+Alt+V".to_string(),
+            open_dashboard: "Ctrl+Alt+D".to_string(),
+        };
+
+        assert!(validate_hotkeys(&hotkeys).is_ok());
+    }
+
+    #[test]
+    fn default_hotkeys_validate() {
+        let settings = AppSettings::default();
+
+        assert!(validate_hotkeys(&settings.hotkeys).is_ok());
+        assert!(matches!(
+            parse_shortcut(&settings.hotkeys.hold_to_talk),
+            Ok(ParsedShortcut::ModifierChord(_))
+        ));
+        assert!(matches!(
+            parse_shortcut(&settings.hotkeys.toggle_dictation),
+            Ok(ParsedShortcut::Plugin(_))
+        ));
     }
 }

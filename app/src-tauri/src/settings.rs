@@ -63,6 +63,42 @@ pub struct HotkeySettings {
     pub open_dashboard: String,
 }
 
+impl Default for HotkeySettings {
+    fn default() -> Self {
+        Self {
+            hold_to_talk: "Ctrl+Shift".to_string(),
+            toggle_dictation: "Backquote".to_string(),
+            paste_last_transcript: "Ctrl+Alt+V".to_string(),
+            open_dashboard: "Ctrl+Alt+D".to_string(),
+        }
+    }
+}
+
+impl HotkeySettings {
+    /// The defaults that shipped before modifier-only chord support. Windows
+    /// intercepts Ctrl+Win+Space (layout switcher) and Ctrl+Win+D (new
+    /// virtual desktop), so installs still on these exact values are migrated
+    /// to the current defaults.
+    pub fn matches_legacy_defaults(&self) -> bool {
+        self.hold_to_talk == "Ctrl+Win+Space"
+            && self.toggle_dictation == "Ctrl+Win+D"
+            && self.paste_last_transcript == "Ctrl+Alt+V"
+            && self.open_dashboard == "Ctrl+Win+H"
+    }
+
+    /// Replaces the stored hotkeys with the current defaults when they still
+    /// exactly equal the legacy defaults. Returns true when a migration
+    /// happened and the settings should be saved back.
+    pub fn migrate_legacy_defaults(&mut self) -> bool {
+        if self.matches_legacy_defaults() {
+            *self = Self::default();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -83,12 +119,7 @@ impl Default for AppSettings {
             history_enabled: true,
             save_audio_clips: false,
             history_retention_days: Some(30),
-            hotkeys: HotkeySettings {
-                hold_to_talk: "Ctrl+Win+Space".to_string(),
-                toggle_dictation: "Ctrl+Win+D".to_string(),
-                paste_last_transcript: "Ctrl+Alt+V".to_string(),
-                open_dashboard: "Ctrl+Win+H".to_string(),
-            },
+            hotkeys: HotkeySettings::default(),
         }
     }
 }
@@ -161,5 +192,50 @@ mod tests {
         settings.history_retention_days = Some(14);
 
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn default_hotkeys_avoid_windows_reserved_shortcuts() {
+        let hotkeys = HotkeySettings::default();
+
+        assert_eq!(hotkeys.hold_to_talk, "Ctrl+Shift");
+        assert_eq!(hotkeys.toggle_dictation, "Backquote");
+        assert_eq!(hotkeys.paste_last_transcript, "Ctrl+Alt+V");
+        assert_eq!(hotkeys.open_dashboard, "Ctrl+Alt+D");
+    }
+
+    #[test]
+    fn migrates_exact_legacy_default_hotkeys() {
+        let mut hotkeys = HotkeySettings {
+            hold_to_talk: "Ctrl+Win+Space".to_string(),
+            toggle_dictation: "Ctrl+Win+D".to_string(),
+            paste_last_transcript: "Ctrl+Alt+V".to_string(),
+            open_dashboard: "Ctrl+Win+H".to_string(),
+        };
+
+        assert!(hotkeys.migrate_legacy_defaults());
+        assert_eq!(hotkeys, HotkeySettings::default());
+    }
+
+    #[test]
+    fn does_not_migrate_customized_hotkeys() {
+        let mut hotkeys = HotkeySettings {
+            hold_to_talk: "Ctrl+Win+Space".to_string(),
+            toggle_dictation: "Ctrl+Win+D".to_string(),
+            paste_last_transcript: "Ctrl+Alt+V".to_string(),
+            open_dashboard: "Ctrl+Alt+J".to_string(),
+        };
+        let before = hotkeys.clone();
+
+        assert!(!hotkeys.migrate_legacy_defaults());
+        assert_eq!(hotkeys, before);
+    }
+
+    #[test]
+    fn does_not_migrate_current_defaults() {
+        let mut hotkeys = HotkeySettings::default();
+
+        assert!(!hotkeys.migrate_legacy_defaults());
+        assert_eq!(hotkeys, HotkeySettings::default());
     }
 }

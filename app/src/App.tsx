@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertCircle,
@@ -21,6 +21,7 @@ import {
   Play,
   Radio,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -41,11 +42,14 @@ import {
   deleteModel,
   downloadModel,
   getDashboardData,
+  getHotkeyStatus,
   listMicrophones,
   listModels,
   pasteLastTranscript,
   pasteTranscript,
+  rebindHotkey,
   recordTestClip,
+  resetHotkeysToDefaults,
   retryModelDownload,
   searchTranscripts,
   selectModel,
@@ -61,6 +65,9 @@ import {
   type DashboardData,
   type DictationResult,
   type HistoryRetentionDays,
+  type HotkeyAction,
+  type HotkeyBinding,
+  type HotkeyStatus,
   type MicrophoneInfo,
   type ModelDownloadProgress,
   type ModelInfo,
@@ -73,6 +80,7 @@ import {
   type RecordingErrorEvent,
   type Transcript,
 } from "./backend";
+import { playStartCue, playStopCue } from "./sounds";
 import "./App.css";
 
 type ViewName =
@@ -190,7 +198,12 @@ function App() {
   const [copyingLastTranscript, setCopyingLastTranscript] = useState(false);
   const [recordingBusy, setRecordingBusy] = useState(false);
   const [toast, setToast] = useState<ToastNotice | null>(null);
+  const soundsEnabledRef = useRef(false);
   const heading = viewTitles[activeView];
+
+  useEffect(() => {
+    soundsEnabledRef.current = dashboardData?.settings.soundsEnabled ?? false;
+  }, [dashboardData?.settings.soundsEnabled]);
 
   const showNotice = useCallback(
     (message: string, tone: ToastNotice["tone"] = "info") => {
@@ -256,9 +269,15 @@ function App() {
           scheduleRefresh();
         }),
         listen<RecordingSessionInfo>("audio://recording-started", (event) => {
+          if (soundsEnabledRef.current) {
+            playStartCue();
+          }
           showNotice(`Recording with ${event.payload.microphoneName}.`);
         }),
         listen<RecordingResult>("audio://recording-stopped", (event) => {
+          if (soundsEnabledRef.current) {
+            playStopCue();
+          }
           if (event.payload.status === "too_short") {
             showNotice(
               event.payload.reason ??
@@ -501,7 +520,7 @@ function App() {
                 onClick={() => setActiveView(item.label)}
                 type="button"
               >
-                <Icon aria-hidden="true" className="nav-icon" size={17} />
+                <Icon aria-hidden="true" className="nav-icon" size={15} />
                 {item.label}
               </button>
             );
@@ -510,10 +529,10 @@ function App() {
 
         <div className="privacy-panel">
           <div className="privacy-status">
-            <ShieldCheck aria-hidden="true" size={16} />
+            <ShieldCheck aria-hidden="true" size={14} />
             Offline ready
           </div>
-          <p>Audio and transcripts stay on this device after model download.</p>
+          <p>Audio and transcripts stay on this device.</p>
         </div>
       </aside>
 
@@ -529,18 +548,41 @@ function App() {
               onClick={() => setActiveView("History")}
               type="button"
             >
-              <HistoryIcon aria-hidden="true" size={16} />
-              Open history
+              <HistoryIcon aria-hidden="true" size={14} />
+              History
             </button>
-            <button
-              className="primary-button"
-              disabled={recordingBusy || !canStartRecording(dashboardData)}
-              onClick={() => void handleStartRecording()}
-              type="button"
-            >
-              <Mic aria-hidden="true" size={16} />
-              {recordingBusy ? "Working..." : "Start"}
-            </button>
+            {dashboardData?.appState.status === "Recording" ? (
+              <>
+                <button
+                  className="primary-button stop-button"
+                  disabled={recordingBusy}
+                  onClick={() => void handleStopRecording()}
+                  type="button"
+                >
+                  <Square aria-hidden="true" size={14} />
+                  {recordingBusy ? "Working..." : "Stop"}
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={recordingBusy}
+                  onClick={() => void handleCancelRecording()}
+                  type="button"
+                >
+                  <Eraser aria-hidden="true" size={13} />
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                className="primary-button"
+                disabled={recordingBusy || !canStartRecording(dashboardData)}
+                onClick={() => void handleStartRecording()}
+                type="button"
+              >
+                <Mic aria-hidden="true" size={14} />
+                {recordingBusy ? "Working..." : "Start"}
+              </button>
+            )}
           </div>
         </header>
 
@@ -558,6 +600,7 @@ function App() {
         {dashboardData?.settings.showFloatingPill ? (
           <FloatingPill
             appState={dashboardData.appState}
+            onStop={handleStopRecording}
             outputMode={dashboardData.settings.outputMode}
             pasteHotkey={dashboardData.settings.hotkeys.pasteLastTranscript}
           />
@@ -714,8 +757,7 @@ function TranscribeView({
             <strong>{recordingStageTitle(appState.status)}</strong>
             <p className="muted">
               Hold {formatHotkey(settings.hotkeys.holdToTalk)} or use toggle
-              mode. Captures are normalized to 16 kHz mono WAV before local
-              transcription.
+              mode. Audio is transcribed locally.
             </p>
           </div>
         </div>
@@ -1317,6 +1359,61 @@ function SettingsView({
   );
 }
 
+const hotkeyActionLabels: Record<string, string> = {
+  holdToTalk: "Hold-to-Talk",
+  toggleDictation: "Toggle Dictation",
+  pasteLastTranscript: "Paste Last Transcript",
+  openDashboard: "Open Dashboard",
+};
+
+const hotkeyActionHints: Record<string, string> = {
+  holdToTalk: "Hold to record, release to transcribe",
+  toggleDictation: "Press once to start, again to stop",
+  pasteLastTranscript: "Insert the Last Transcript Buffer",
+  openDashboard: "Bring up this dashboard",
+};
+
+const hotkeyModifierOrder = ["Ctrl", "Shift", "Alt", "Super"] as const;
+
+function modifierFromEventKey(key: string): string | null {
+  switch (key) {
+    case "Control":
+      return "Ctrl";
+    case "Shift":
+      return "Shift";
+    case "Alt":
+      return "Alt";
+    case "Meta":
+      return "Super";
+    default:
+      return null;
+  }
+}
+
+function captureKeyName(code: string): string | null {
+  if (!code) {
+    return null;
+  }
+
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) {
+    return letter[1];
+  }
+
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) {
+    return digit[1];
+  }
+
+  // Everything else already uses W3C code names the backend understands:
+  // F1..F12, Space, Backquote, Minus, Comma, Enter, Tab, ArrowUp, ...
+  return code;
+}
+
+function orderedModifiers(modifiers: Set<string>): string[] {
+  return hotkeyModifierOrder.filter((modifier) => modifiers.has(modifier));
+}
+
 function HotkeysView({
   actions,
   settings,
@@ -1324,32 +1421,287 @@ function HotkeysView({
   actions: ViewActions;
   settings: AppSettings;
 }) {
-  const hotkeys = hotkeyRows(settings);
+  const [status, setStatus] = useState<HotkeyStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [captureAction, setCaptureAction] = useState<HotkeyAction | null>(null);
+  const [capturePreview, setCapturePreview] = useState("");
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [hotkeyBusy, setHotkeyBusy] = useState(false);
+  const heldModifiersRef = useRef<Set<string>>(new Set());
+  const captureCommittedRef = useRef(false);
+
+  const loadStatus = useCallback(async () => {
+    setStatusLoading(true);
+    setStatusError(null);
+
+    try {
+      setStatus(await getHotkeyStatus());
+    } catch (error) {
+      setStatusError(commandErrorMessage(error));
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  const refreshSettings = actions.refresh;
+
+  const applyRebind = useCallback(
+    async (action: HotkeyAction, shortcut: string) => {
+      setHotkeyBusy(true);
+      setRowErrors((current) => {
+        const next = { ...current };
+        delete next[action];
+        return next;
+      });
+
+      try {
+        setStatus(await rebindHotkey(action, shortcut));
+        await refreshSettings();
+      } catch (error) {
+        setRowErrors((current) => ({
+          ...current,
+          [action]: commandErrorMessage(error),
+        }));
+        try {
+          setStatus(await getHotkeyStatus());
+        } catch {
+          // Keep the previous status if the refresh fails.
+        }
+      } finally {
+        setHotkeyBusy(false);
+      }
+    },
+    [refreshSettings],
+  );
+
+  const startCapture = useCallback((action: HotkeyAction) => {
+    heldModifiersRef.current = new Set();
+    captureCommittedRef.current = false;
+    setRowErrors((current) => {
+      const next = { ...current };
+      delete next[action];
+      return next;
+    });
+    setCapturePreview("");
+    setCaptureAction(action);
+  }, []);
+
+  const cancelCapture = useCallback(() => {
+    captureCommittedRef.current = true;
+    setCaptureAction(null);
+    setCapturePreview("");
+  }, []);
+
+  useEffect(() => {
+    if (!captureAction) {
+      return;
+    }
+
+    const commit = (shortcut: string) => {
+      if (captureCommittedRef.current) {
+        return;
+      }
+
+      captureCommittedRef.current = true;
+      setCaptureAction(null);
+      setCapturePreview("");
+      void applyRebind(captureAction, shortcut);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (event.key === "Escape") {
+        captureCommittedRef.current = true;
+        setCaptureAction(null);
+        setCapturePreview("");
+        return;
+      }
+
+      const modifier = modifierFromEventKey(event.key);
+      if (modifier) {
+        heldModifiersRef.current.add(modifier);
+        setCapturePreview(orderedModifiers(heldModifiersRef.current).join("+"));
+        return;
+      }
+
+      const keyName = captureKeyName(event.code);
+      if (!keyName) {
+        return;
+      }
+
+      const modifiers = new Set<string>();
+      if (event.ctrlKey) {
+        modifiers.add("Ctrl");
+      }
+      if (event.shiftKey) {
+        modifiers.add("Shift");
+      }
+      if (event.altKey) {
+        modifiers.add("Alt");
+      }
+      if (event.metaKey) {
+        modifiers.add("Super");
+      }
+
+      commit([...orderedModifiers(modifiers), keyName].join("+"));
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const modifier = modifierFromEventKey(event.key);
+      if (modifier && heldModifiersRef.current.size > 0) {
+        // Modifier-only chord: released without a non-modifier key.
+        commit(orderedModifiers(heldModifiersRef.current).join("+"));
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
+  }, [applyRebind, captureAction]);
+
+  const handleResetDefaults = useCallback(async () => {
+    setHotkeyBusy(true);
+    setRowErrors({});
+    setStatusError(null);
+
+    try {
+      setStatus(await resetHotkeysToDefaults());
+      await refreshSettings();
+    } catch (error) {
+      setStatusError(commandErrorMessage(error));
+    } finally {
+      setHotkeyBusy(false);
+    }
+  }, [refreshSettings]);
+
+  const bindings: HotkeyBinding[] =
+    status?.bindings ??
+    hotkeyRows(settings).map((row) => ({
+      action: row.action,
+      shortcut: row.value,
+      normalizedShortcut: null,
+      registered: false,
+      error: null,
+    }));
 
   return (
     <section className="view-grid">
       <article className="panel-card span-2">
         <div className="section-heading compact">
-          <h2>Registered global hotkeys</h2>
-          <CheckCircle2 aria-hidden="true" size={16} />
-          <span className="pill pending">Registration pending</span>
+          <h2>Global hotkeys</h2>
+          <div className="row-actions">
+            <button
+              className="ghost-button"
+              disabled={statusLoading}
+              onClick={() => void loadStatus()}
+              type="button"
+            >
+              <RefreshCw aria-hidden="true" size={13} />
+              Refresh
+            </button>
+            <button
+              className="secondary-button"
+              disabled={hotkeyBusy || captureAction !== null}
+              onClick={() => void handleResetDefaults()}
+              type="button"
+            >
+              <RotateCcw aria-hidden="true" size={13} />
+              Reset to defaults
+            </button>
+          </div>
         </div>
-        <div className="hotkey-editor-list">
-          {hotkeys.map((hotkey) => (
-            <div className="hotkey-editor-row" key={hotkey.label}>
-              <div>
-                <strong>{hotkey.label}</strong>
-                <span>Saved setting, backend registration pending</span>
-              </div>
-              <kbd>{formatHotkey(hotkey.value)}</kbd>
-              <span className="pill pending">Pending</span>
-              <button className="secondary-button" disabled type="button">
-                <Keyboard aria-hidden="true" size={15} />
-                Rebind pending
-              </button>
-            </div>
-          ))}
-        </div>
+        {statusError ? (
+          <InlineError message={statusError} onRetry={loadStatus} />
+        ) : null}
+        {statusLoading && !status ? (
+          <div className="pending-panel">
+            <RefreshCw aria-hidden="true" size={14} />
+            <span>Loading hotkey registration status...</span>
+          </div>
+        ) : (
+          <div className="hotkey-editor-list">
+            {bindings.map((binding) => {
+              const isCapturing = captureAction === binding.action;
+              const rowError = rowErrors[binding.action] ?? binding.error;
+              return (
+                <div className="hotkey-editor-row" key={binding.action}>
+                  <div>
+                    <strong>
+                      {hotkeyActionLabels[binding.action] ?? binding.action}
+                    </strong>
+                    {rowError ? (
+                      <span className="hotkey-error">{rowError}</span>
+                    ) : (
+                      <span>
+                        {hotkeyActionHints[binding.action] ?? "Global shortcut"}
+                      </span>
+                    )}
+                  </div>
+                  <kbd>
+                    {isCapturing
+                      ? capturePreview
+                        ? `${formatHotkey(capturePreview)} ...`
+                        : "Press keys..."
+                      : formatHotkey(binding.shortcut)}
+                  </kbd>
+                  {status ? (
+                    binding.registered ? (
+                      <span className="pill ready">Registered</span>
+                    ) : (
+                      <span className="pill error">
+                        {binding.error ? "Failed" : "Inactive"}
+                      </span>
+                    )
+                  ) : (
+                    <span className="pill idle">Unknown</span>
+                  )}
+                  {isCapturing ? (
+                    <button
+                      className="secondary-button"
+                      onClick={cancelCapture}
+                      type="button"
+                    >
+                      Press keys... (Esc to cancel)
+                    </button>
+                  ) : (
+                    <button
+                      className="secondary-button"
+                      disabled={hotkeyBusy || captureAction !== null}
+                      onClick={() => startCapture(binding.action as HotkeyAction)}
+                      type="button"
+                    >
+                      <Keyboard aria-hidden="true" size={13} />
+                      Rebind
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {status?.windowsFallbackNote ? (
+          <p className="muted hotkey-note">{status.windowsFallbackNote}</p>
+        ) : null}
+        {status?.holdReleaseVerificationRequired ? (
+          <p className="muted hotkey-note">
+            Hold-to-talk release is tracked by a native key watcher, so
+            modifier-only chords like Ctrl+Shift work for holding.
+          </p>
+        ) : null}
       </article>
 
       <article className="panel-card">
@@ -1362,16 +1714,6 @@ function HotkeysView({
           options={recordingModeOptions}
           selected={settings.recordingMode}
         />
-      </article>
-
-      <article className="panel-card">
-        <div className="section-heading compact">
-          <h2>Conflict handling</h2>
-        </div>
-        <div className="pending-panel">
-          <Info aria-hidden="true" size={16} />
-          <span>Shortcut conflict detection will run with the hotkey service.</span>
-        </div>
       </article>
     </section>
   );
@@ -2189,15 +2531,17 @@ function StatusCard({
     <article className="metric-card status-card">
       <div className="card-header">
         <span>
-          <Icon aria-hidden="true" size={15} />
+          <Icon aria-hidden="true" size={13} />
           {label}
         </span>
         {status}
       </div>
-      <strong>{value}</strong>
-      <button className="ghost-button" onClick={onAction} type="button">
-        {action}
-      </button>
+      <div className="status-card-body">
+        <strong title={value}>{value}</strong>
+        <button className="ghost-button" onClick={onAction} type="button">
+          {action}
+        </button>
+      </div>
     </article>
   );
 }
@@ -2452,10 +2796,12 @@ function StatePill({ appState }: { appState: AppStateSnapshot }) {
 
 function FloatingPill({
   appState,
+  onStop,
   outputMode,
   pasteHotkey,
 }: {
   appState: AppStateSnapshot;
+  onStop: () => Promise<void>;
   outputMode: OutputMode;
   pasteHotkey: string;
 }) {
@@ -2480,9 +2826,17 @@ function FloatingPill({
   }
 
   const lines = floatingPillLines(appState, outputMode, pasteHotkey);
+  const isRecording = appState.status === "Recording";
 
   return (
-    <div className={`floating-pill ${stateTone(appState.status)}`} role="status">
+    <div
+      className={`floating-pill ${stateTone(appState.status)}${
+        isRecording ? " clickable" : ""
+      }`}
+      onClick={isRecording ? () => void onStop() : undefined}
+      role={isRecording ? "button" : "status"}
+      title={isRecording ? "Click to stop recording" : undefined}
+    >
       <span className="floating-pulse" aria-hidden="true" />
       <div>
         <strong>{lines[0]}</strong>
@@ -2656,7 +3010,7 @@ function floatingPillLines(
   pasteHotkey: string,
 ) {
   if (appState.status === "Recording") {
-    return ["Recording...", "Release hotkey or press Stop"];
+    return ["Recording...", "Click here or release hotkey to stop"];
   }
 
   if (appState.status === "Stopping") {
@@ -2777,10 +3131,26 @@ function recordingStageTitle(status: AppStateSnapshot["status"]) {
 
 function hotkeyRows(settings: AppSettings) {
   return [
-    { label: "Hold-to-Talk", value: settings.hotkeys.holdToTalk },
-    { label: "Toggle Dictation", value: settings.hotkeys.toggleDictation },
-    { label: "Paste Last", value: settings.hotkeys.pasteLastTranscript },
-    { label: "Open Dashboard", value: settings.hotkeys.openDashboard },
+    {
+      action: "holdToTalk",
+      label: "Hold-to-Talk",
+      value: settings.hotkeys.holdToTalk,
+    },
+    {
+      action: "toggleDictation",
+      label: "Toggle Dictation",
+      value: settings.hotkeys.toggleDictation,
+    },
+    {
+      action: "pasteLastTranscript",
+      label: "Paste Last",
+      value: settings.hotkeys.pasteLastTranscript,
+    },
+    {
+      action: "openDashboard",
+      label: "Open Dashboard",
+      value: settings.hotkeys.openDashboard,
+    },
   ];
 }
 
@@ -2799,8 +3169,15 @@ function retentionFromValue(value: string): HistoryRetentionDays {
     : 30;
 }
 
+const hotkeyDisplayAliases: Record<string, string> = {
+  Backquote: "~ (tilde)",
+};
+
 function formatHotkey(value: string) {
-  return value.split("+").join(" + ");
+  return value
+    .split("+")
+    .map((part) => hotkeyDisplayAliases[part] ?? part)
+    .join(" + ");
 }
 
 function formatDateTime(value: string) {

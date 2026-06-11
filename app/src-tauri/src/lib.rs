@@ -35,7 +35,13 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
             std::fs::create_dir_all(&audio_temp_dir)?;
             let db = Database::open(app_data_dir.join("localdictate.sqlite3"))?;
-            let settings = db.get_settings()?;
+            let mut settings = db.get_settings()?;
+            // One-time migration: replace the old default hotkeys (which
+            // collide with Windows shortcuts like Ctrl+Win+Space) with the
+            // current defaults on installs that never customized them.
+            if settings.hotkeys.migrate_legacy_defaults() {
+                db.save_settings(&settings)?;
+            }
             db.enforce_history_retention(settings.history_retention_days)?;
             app.manage(BackendState::new(db, audio_temp_dir));
             hotkeys::setup(app.handle(), &settings.hotkeys)?;

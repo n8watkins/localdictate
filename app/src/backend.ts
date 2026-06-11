@@ -229,6 +229,26 @@ export type CommandError = {
   message?: string;
 };
 
+export type HotkeyAction =
+  | "holdToTalk"
+  | "toggleDictation"
+  | "pasteLastTranscript"
+  | "openDashboard";
+
+export type HotkeyBinding = {
+  action: string;
+  shortcut: string;
+  normalizedShortcut: string | null;
+  registered: boolean;
+  error: string | null;
+};
+
+export type HotkeyStatus = {
+  bindings: HotkeyBinding[];
+  holdReleaseVerificationRequired: boolean;
+  windowsFallbackNote: string;
+};
+
 export type DashboardData = {
   appState: AppStateSnapshot;
   settings: AppSettings;
@@ -380,6 +400,21 @@ export function transcribeRecording(
   recording: RecordingResult,
 ): Promise<DictationResult> {
   return invoke("transcribe_recording", { recording });
+}
+
+export function getHotkeyStatus(): Promise<HotkeyStatus> {
+  return invoke("get_hotkey_status");
+}
+
+export function rebindHotkey(
+  action: HotkeyAction,
+  shortcut: string,
+): Promise<HotkeyStatus> {
+  return invoke("rebind_hotkey", { action, shortcut });
+}
+
+export function resetHotkeysToDefaults(): Promise<HotkeyStatus> {
+  return invoke("reset_hotkeys_to_defaults");
 }
 
 export function commandErrorMessage(error: unknown): string {
