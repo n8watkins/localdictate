@@ -136,8 +136,12 @@ fn paste_transcript_text(
         &output_mode,
         Some(&paste_method),
     );
-    let result = {
+    let result = (|| {
         let _state_guard = PasteStateGuard::start(app);
+
+        // The paste hotkey can fire while one of our own windows is focused;
+        // the transcript must never be typed into LocalDictate itself.
+        platform::ensure_foreign_focus()?;
 
         match paste_method {
             PasteMethod::DirectInsert => {
@@ -160,7 +164,7 @@ fn paste_transcript_text(
                 compatibility_paste_with_restore(transcript, output_mode)
             }
         }
-    };
+    })();
 
     match result {
         Ok(result) => {
@@ -238,11 +242,15 @@ fn copy_and_paste_transcript_text(
         &output_mode,
         None,
     );
-    let result = {
+    let result = (|| {
         let _state_guard = PasteStateGuard::start(app);
 
         set_clipboard_text(&transcript.text)?;
         thread::sleep(Duration::from_millis(60));
+        // The paste hotkey can fire while one of our own windows is focused;
+        // the transcript must never be typed into LocalDictate itself. The
+        // clipboard copy above is kept either way so a manual paste still works.
+        platform::ensure_foreign_focus()?;
         platform::send_paste_shortcut()?;
 
         Ok(OutputResult {
@@ -258,7 +266,7 @@ fn copy_and_paste_transcript_text(
             clipboard_restore_error: None,
             message: "Copied transcript to the clipboard and pasted it.".to_string(),
         })
-    };
+    })();
 
     match result {
         Ok(result) => {
@@ -485,11 +493,89 @@ impl Drop for PasteStateGuard<'_> {
 #[cfg(windows)]
 mod platform {
     use crate::error::CommandError;
-    use std::mem::size_of;
+    use std::{mem::size_of, thread, time::Duration};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
         VIRTUAL_KEY, VK_CONTROL, VK_V,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW,
+        GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE, GW_HWNDNEXT,
+        WS_EX_TOOLWINDOW,
+    };
+
+    pub fn ensure_foreign_focus() -> Result<(), CommandError> {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground.is_invalid() || !is_own_window(foreground) {
+            return Ok(());
+        }
+
+        // Walking down the Z-order from our foreground window reaches the app
+        // the user was in before focusing LocalDictate. Refocusing it is allowed
+        // because our process currently owns the foreground window.
+        let mut candidate = foreground;
+        while let Ok(next) = unsafe { GetWindow(candidate, GW_HWNDNEXT) } {
+            candidate = next;
+
+            if !is_paste_target(candidate) {
+                continue;
+            }
+
+            if !unsafe { SetForegroundWindow(candidate) }.as_bool() {
+                break;
+            }
+
+            // The target needs time to take keyboard focus before SendInput.
+            thread::sleep(Duration::from_millis(100));
+            return Ok(());
+        }
+
+        log::warn!("Focus guard found no other app window; skipping paste.");
+        Err(CommandError::new(
+            "paste_target_unavailable",
+            "Could not find another app window to paste into. Click into the target app and try again.",
+        ))
+    }
+
+    fn is_own_window(hwnd: HWND) -> bool {
+        let mut process_id = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+        process_id == unsafe { GetCurrentProcessId() }
+    }
+
+    fn is_paste_target(hwnd: HWND) -> bool {
+        if is_own_window(hwnd) || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            return false;
+        }
+
+        // Tool windows (tray flyouts, floating palettes) never take typed input.
+        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
+            return false;
+        }
+
+        // Untitled top-level windows are almost always invisible helpers.
+        if unsafe { GetWindowTextLengthW(hwnd) } == 0 {
+            return false;
+        }
+
+        // Suspended UWP apps stay "visible" in the Z-order but are cloaked by
+        // DWM; focusing one would swallow the paste. A failed query means the
+        // window predates cloaking and is safe to use.
+        let mut cloaked = 0u32;
+        let cloak_query = unsafe {
+            DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut u32 as *mut _,
+                size_of::<u32>() as u32,
+            )
+        };
+        !(cloak_query.is_ok() && cloaked != 0)
+    }
 
     pub fn direct_insert_text(text: &str) -> Result<(), CommandError> {
         let mut inputs = Vec::with_capacity(256);
@@ -567,6 +653,10 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use crate::error::CommandError;
+
+    pub fn ensure_foreign_focus() -> Result<(), CommandError> {
+        Ok(())
+    }
 
     pub fn direct_insert_text(_text: &str) -> Result<(), CommandError> {
         Err(CommandError::new(
