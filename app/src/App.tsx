@@ -19,7 +19,6 @@ import {
   Keyboard,
   Mic,
   MonitorCog,
-  Pencil,
   Play,
   Radio,
   RefreshCw,
@@ -46,6 +45,7 @@ import {
   getDashboardData,
   getHotkeyStatus,
   getTestClipAudio,
+  getTranscriptAudio,
   listMicrophones,
   listModels,
   openDataFolder,
@@ -61,7 +61,6 @@ import {
   startRecording,
   stopRecording,
   transcribeRecording,
-  updateTranscript,
   updateSettings,
   type AudioLevelEvent,
   type AppSettings,
@@ -953,8 +952,8 @@ function HistoryView({
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [busyTranscriptId, setBusyTranscriptId] = useState<string | null>(null);
   const [clearingHistory, setClearingHistory] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editText, setEditText] = useState("");
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const playbackRef = useRef<HTMLAudioElement | null>(null);
   const { settings } = data;
   const pageSize = 10;
 
@@ -1047,32 +1046,40 @@ function HistoryView({
     [refreshAfterMutation],
   );
 
-  const startEdit = useCallback((transcript: Transcript) => {
-    setEditingId(transcript.id);
-    setEditText(transcript.text);
+  const stopPlayback = useCallback(() => {
+    playbackRef.current?.pause();
+    playbackRef.current = null;
+    setPlayingId(null);
   }, []);
 
-  const cancelEdit = useCallback(() => {
-    setEditingId(null);
-    setEditText("");
-  }, []);
+  useEffect(() => stopPlayback, [stopPlayback]);
 
-  const saveEdit = useCallback(
+  const handlePlayTranscript = useCallback(
     async (id: string) => {
-      setBusyTranscriptId(id);
+      if (playingId === id) {
+        stopPlayback();
+        return;
+      }
+
+      stopPlayback();
       setHistoryError(null);
 
       try {
-        await updateTranscript(id, editText);
-        cancelEdit();
-        await refreshAfterMutation();
+        const base64 = await getTranscriptAudio(id);
+        const audio = new Audio(`data:audio/wav;base64,${base64}`);
+        audio.onended = () => {
+          playbackRef.current = null;
+          setPlayingId(null);
+        };
+        playbackRef.current = audio;
+        setPlayingId(id);
+        await audio.play();
       } catch (error) {
+        stopPlayback();
         setHistoryError(commandErrorMessage(error));
-      } finally {
-        setBusyTranscriptId(null);
       }
     },
-    [cancelEdit, editText, refreshAfterMutation],
+    [playingId, stopPlayback],
   );
 
   const handleDeleteTranscript = useCallback(
@@ -1173,16 +1180,13 @@ function HistoryView({
             {transcripts.map((item) => (
               <TranscriptRow
                 busy={busyTranscriptId === item.id}
-                editText={editingId === item.id ? editText : undefined}
                 item={item}
                 key={item.id}
-                onCancelEdit={cancelEdit}
                 onCopy={handleCopyTranscript}
                 onDelete={handleDeleteTranscript}
-                onEdit={startEdit}
-                onEditTextChange={setEditText}
                 onPaste={handlePasteTranscript}
-                onSaveEdit={saveEdit}
+                onPlay={handlePlayTranscript}
+                playing={playingId === item.id}
               />
             ))}
           </div>
@@ -2837,101 +2841,64 @@ function SettingRow({
 
 function TranscriptRow({
   busy = false,
-  editText,
   item,
-  onCancelEdit,
   onCopy,
   onDelete,
-  onEdit,
-  onEditTextChange,
   onPaste,
-  onSaveEdit,
+  onPlay,
+  playing = false,
 }: {
   busy?: boolean;
-  editText?: string;
   item: Transcript;
-  onCancelEdit?: () => void;
   onCopy?: (id: string) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
-  onEdit?: (transcript: Transcript) => void;
-  onEditTextChange?: (text: string) => void;
   onPaste?: (id: string) => Promise<void>;
-  onSaveEdit?: (id: string) => Promise<void>;
+  onPlay?: (id: string) => Promise<void>;
+  playing?: boolean;
 }) {
-  const isEditing = editText !== undefined;
-
   return (
     <div className="history-row">
       <div>
         <strong>{transcriptTitle(item)}</strong>
-        {isEditing ? (
-          <textarea
-            aria-label="Edit transcript text"
-            className="history-edit"
-            onChange={(event) => onEditTextChange?.(event.currentTarget.value)}
-            value={editText}
-          />
-        ) : (
-          <p title={item.text}>{item.text}</p>
-        )}
+        <p title={item.text}>{item.text}</p>
         <span>{transcriptMeta(item)}</span>
       </div>
       <div className="row-actions">
-        <span className="pill preserve">
-          {item.outputMode ? outputModeLabel(item.outputMode) : "Saved"}
-        </span>
-        {isEditing ? (
-          <>
-            <button
-              className="secondary-button"
-              disabled={busy || !editText.trim()}
-              onClick={() => void onSaveEdit?.(item.id)}
-              type="button"
-            >
-              Save
-            </button>
-            <button
-              className="ghost-button"
-              disabled={busy}
-              onClick={onCancelEdit}
-              type="button"
-            >
-              Cancel
-            </button>
-          </>
-        ) : (
-          <>
-            <IconButton
-              disabled={busy || !onPaste}
-              label={busy ? "Working..." : "Insert into focused app"}
-              onClick={() => void onPaste?.(item.id)}
-            >
-              <ClipboardPaste aria-hidden="true" size={15} />
-            </IconButton>
-            <IconButton
-              disabled={busy || !onCopy}
-              label="Copy to clipboard"
-              onClick={() => void onCopy?.(item.id)}
-            >
-              <Copy aria-hidden="true" size={15} />
-            </IconButton>
-            <IconButton
-              disabled={busy || !onEdit}
-              label="Edit transcript"
-              onClick={() => onEdit?.(item)}
-            >
-              <Pencil aria-hidden="true" size={15} />
-            </IconButton>
-            <IconButton
-              danger
-              disabled={busy || !onDelete}
-              label="Delete transcript"
-              onClick={() => void onDelete?.(item.id)}
-            >
-              <Trash2 aria-hidden="true" size={15} />
-            </IconButton>
-          </>
-        )}
+        {item.audioPath ? (
+          <IconButton
+            disabled={busy || !onPlay}
+            label={playing ? "Stop playback" : "Play recording"}
+            onClick={() => void onPlay?.(item.id)}
+          >
+            {playing ? (
+              <Square aria-hidden="true" size={15} />
+            ) : (
+              <Play aria-hidden="true" size={15} />
+            )}
+          </IconButton>
+        ) : null}
+        <IconButton
+          disabled={busy || !onCopy}
+          label="Copy to clipboard"
+          onClick={() => void onCopy?.(item.id)}
+        >
+          <Copy aria-hidden="true" size={15} />
+        </IconButton>
+        <IconButton
+          disabled={busy || !onPaste}
+          label={busy ? "Working..." : "Insert into focused app"}
+          onClick={() => void onPaste?.(item.id)}
+        >
+          <ClipboardPaste aria-hidden="true" size={15} />
+        </IconButton>
+        <IconButton
+          danger
+          disabled={busy || !onDelete}
+          label="Delete transcript"
+          onClick={() => void onDelete?.(item.id)}
+        >
+          <Trash2 aria-hidden="true" size={15} />
+        </IconButton>
       </div>
     </div>
   );

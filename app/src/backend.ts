@@ -80,6 +80,7 @@ export type Transcript = {
   outputMode: OutputMode | null;
   pasteMethod: PasteMethod | null;
   transcriptionLatencyMs: number | null;
+  audioPath: string | null;
 };
 
 export type TranscriptSearchResult = {
@@ -358,6 +359,11 @@ export function getTranscript(id: string): Promise<Transcript | null> {
 
 export function updateTranscript(id: string, text: string): Promise<Transcript> {
   return invoke("update_transcript", { id, text });
+}
+
+/** Returns the saved dictation clip for a transcript as base64 WAV. */
+export function getTranscriptAudio(id: string): Promise<string> {
+  return invoke("get_transcript_audio", { id });
 }
 
 export function deleteTranscript(id: string): Promise<void> {
