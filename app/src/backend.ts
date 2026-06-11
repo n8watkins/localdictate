@@ -57,6 +57,8 @@ export type AppSettings = {
   saveAudioClips: boolean;
   historyRetentionDays: HistoryRetentionDays;
   hotkeys: HotkeySettings;
+  pillX: number | null;
+  pillY: number | null;
 };
 
 export type Transcript = {
@@ -249,6 +251,16 @@ export type HotkeyStatus = {
   windowsFallbackNote: string;
 };
 
+export type HotkeyRegistrationFailure = {
+  action: string;
+  shortcut: string;
+  message: string;
+};
+
+export type HotkeyRegistrationFailedEvent = {
+  failures: HotkeyRegistrationFailure[];
+};
+
 export type DashboardData = {
   appState: AppStateSnapshot;
   settings: AppSettings;
@@ -394,6 +406,18 @@ export function cancelRecording(): Promise<void> {
 
 export function recordTestClip(durationMs?: number): Promise<RecordingResult> {
   return invoke("record_test_clip", { durationMs });
+}
+
+export function getTestClipAudio(): Promise<string> {
+  return invoke("get_test_clip_audio");
+}
+
+export function openDataFolder(): Promise<void> {
+  return invoke("open_data_folder");
+}
+
+export function openModelsFolder(): Promise<void> {
+  return invoke("open_models_folder");
 }
 
 export function transcribeRecording(

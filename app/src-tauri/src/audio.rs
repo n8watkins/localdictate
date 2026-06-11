@@ -108,9 +108,9 @@ struct AudioLevelEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RecordingErrorEvent {
-    code: String,
-    message: String,
+pub struct RecordingErrorEvent {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +137,7 @@ pub struct AudioService {
     #[cfg(windows)]
     active: Option<RecordingSession>,
     last_result: Option<RecordingResult>,
+    last_test_clip: Option<PathBuf>,
 }
 
 #[cfg(windows)]
@@ -168,7 +169,16 @@ impl AudioService {
             #[cfg(windows)]
             active: None,
             last_result: None,
+            last_test_clip: None,
         }
+    }
+
+    fn set_last_test_clip(&mut self, path: PathBuf) {
+        self.last_test_clip = Some(path);
+    }
+
+    fn last_test_clip_path(&self) -> Option<PathBuf> {
+        self.last_test_clip.clone()
     }
 
     #[cfg(windows)]
@@ -473,8 +483,34 @@ pub fn record_test_clip_for_app(
         .ok_or_else(|| {
             CommandError::new("recording_failed", "Test recording ended unexpectedly.")
         })?;
+
+    if let Some(wav_path) = result.wav_path.as_deref() {
+        state.audio()?.set_last_test_clip(PathBuf::from(wav_path));
+    }
+
     let _ = app.emit("audio://recording-stopped", &result);
     Ok(result)
+}
+
+/// Returns the most recent test clip WAV as a base64 string for in-app
+/// playback. Errors with code "no_test_clip" when no clip is available.
+pub fn get_test_clip_audio_for_app(app: &AppHandle) -> Result<String, CommandError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let state = app.state::<BackendState>();
+    let path = state
+        .audio()?
+        .last_test_clip_path()
+        .ok_or_else(no_test_clip)?;
+    let bytes = fs::read(&path).map_err(|_| no_test_clip())?;
+    Ok(STANDARD.encode(bytes))
+}
+
+fn no_test_clip() -> CommandError {
+    CommandError::new(
+        "no_test_clip",
+        "No test clip is available yet. Record a test clip first.",
+    )
 }
 
 #[cfg(windows)]
@@ -1137,8 +1173,7 @@ fn duration_ms(sample_count: usize, sample_rate: u32) -> u64 {
     ((sample_count as u128 * 1_000) / sample_rate as u128) as u64
 }
 
-#[cfg(windows)]
-fn emit_recording_error(app: &AppHandle, error: CommandError) {
+pub fn emit_recording_error(app: &AppHandle, error: CommandError) {
     let _ = app.emit(
         "audio://recording-error",
         RecordingErrorEvent {

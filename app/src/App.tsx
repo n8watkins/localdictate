@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   AlertCircle,
   Archive,
+  BarChart3,
   CheckCircle2,
   Clipboard,
   ClipboardPaste,
@@ -43,8 +44,11 @@ import {
   downloadModel,
   getDashboardData,
   getHotkeyStatus,
+  getTestClipAudio,
   listMicrophones,
   listModels,
+  openDataFolder,
+  openModelsFolder,
   pasteLastTranscript,
   pasteTranscript,
   rebindHotkey,
@@ -67,6 +71,7 @@ import {
   type HistoryRetentionDays,
   type HotkeyAction,
   type HotkeyBinding,
+  type HotkeyRegistrationFailedEvent,
   type HotkeyStatus,
   type MicrophoneInfo,
   type ModelDownloadProgress,
@@ -74,7 +79,6 @@ import {
   type OutputMode,
   type OutputResult,
   type PasteMethod,
-  type RecordingMode,
   type RecordingResult,
   type RecordingSessionInfo,
   type RecordingErrorEvent,
@@ -87,7 +91,9 @@ type ViewName =
   | "Dashboard"
   | "Transcribe"
   | "History"
+  | "Stats"
   | "Settings"
+  | "Data & Privacy"
   | "Hotkeys"
   | "Models"
   | "Audio"
@@ -118,7 +124,9 @@ const navItems: { label: ViewName; Icon: LucideIcon }[] = [
   { label: "Dashboard", Icon: Gauge },
   { label: "Transcribe", Icon: Mic },
   { label: "History", Icon: HistoryIcon },
+  { label: "Stats", Icon: BarChart3 },
   { label: "Settings", Icon: SettingsIcon },
+  { label: "Data & Privacy", Icon: ShieldCheck },
   { label: "Hotkeys", Icon: Keyboard },
   { label: "Models", Icon: Database },
   { label: "Audio", Icon: Radio },
@@ -138,9 +146,17 @@ const viewTitles: Record<ViewName, { eyebrow: string; title: string }> = {
     eyebrow: "History",
     title: "Search and reuse local transcripts",
   },
+  Stats: {
+    eyebrow: "Stats",
+    title: "Local dictation usage at a glance",
+  },
   Settings: {
     eyebrow: "Settings",
-    title: "Privacy, output, and app behavior",
+    title: "Output and app behavior",
+  },
+  "Data & Privacy": {
+    eyebrow: "Data & Privacy",
+    title: "History retention and local data",
   },
   Hotkeys: {
     eyebrow: "Hotkeys",
@@ -172,12 +188,6 @@ const pasteMethodOptions: { label: string; value: PasteMethod }[] = [
   { label: "Compatibility Paste", value: "clipboard_restore" },
 ];
 
-const recordingModeOptions: { label: string; value: RecordingMode }[] = [
-  { label: "Hold", value: "hold" },
-  { label: "Toggle", value: "toggle" },
-  { label: "Both", value: "both" },
-];
-
 type ToastNotice = {
   id: number;
   tone: "info" | "success" | "error";
@@ -197,6 +207,7 @@ function App() {
   const [pastingLastTranscript, setPastingLastTranscript] = useState(false);
   const [copyingLastTranscript, setCopyingLastTranscript] = useState(false);
   const [recordingBusy, setRecordingBusy] = useState(false);
+  const [microphones, setMicrophones] = useState<MicrophoneInfo[] | null>(null);
   const [toast, setToast] = useState<ToastNotice | null>(null);
   const soundsEnabledRef = useRef(false);
   const heading = viewTitles[activeView];
@@ -221,8 +232,14 @@ function App() {
     setLoadState((current) => (current === "ready" ? current : "loading"));
 
     try {
-      const data = await getDashboardData();
+      const [data, devices] = await Promise.all([
+        getDashboardData(),
+        listMicrophones().catch(() => null),
+      ]);
       setDashboardData(data);
+      if (devices) {
+        setMicrophones(devices);
+      }
       setLoadState("ready");
     } catch (error) {
       setLoadError(commandErrorMessage(error));
@@ -318,6 +335,23 @@ function App() {
             setActiveView(route);
           }
         }),
+        listen<HotkeyRegistrationFailedEvent>(
+          "localdictate:hotkey-registration-failed",
+          (event) => {
+            const details = event.payload.failures
+              .map(
+                (failure) =>
+                  `${formatHotkey(failure.shortcut)} — ${failure.message}`,
+              )
+              .join("; ");
+            // Always surface hotkey failures, regardless of notification setting.
+            setToast({
+              id: Date.now(),
+              tone: "error",
+              message: `Hotkey(s) failed to register: ${details}`,
+            });
+          },
+        ),
       ]);
 
       if (disposed) {
@@ -595,16 +629,8 @@ function App() {
           <ErrorPanel message={loadError} onRetry={refresh} />
         ) : null}
         {dashboardData
-          ? renderView(activeView, setActiveView, dashboardData, actions)
+          ? renderView(activeView, setActiveView, dashboardData, actions, microphones)
           : null}
-        {dashboardData?.settings.showFloatingPill ? (
-          <FloatingPill
-            appState={dashboardData.appState}
-            onStop={handleStopRecording}
-            outputMode={dashboardData.settings.outputMode}
-            pasteHotkey={dashboardData.settings.hotkeys.pasteLastTranscript}
-          />
-        ) : null}
         {toast ? <Toast notice={toast} /> : null}
       </main>
     </div>
@@ -616,14 +642,19 @@ function renderView(
   setActiveView: (view: ViewName) => void,
   data: DashboardData,
   actions: ViewActions,
+  microphones: MicrophoneInfo[] | null,
 ) {
   switch (activeView) {
     case "Transcribe":
       return <TranscribeView actions={actions} data={data} />;
     case "History":
       return <HistoryView actions={actions} data={data} />;
+    case "Stats":
+      return <StatsView stats={data.stats} />;
     case "Settings":
       return <SettingsView actions={actions} settings={data.settings} />;
+    case "Data & Privacy":
+      return <DataPrivacyView actions={actions} settings={data.settings} />;
     case "Hotkeys":
       return <HotkeysView actions={actions} settings={data.settings} />;
     case "Models":
@@ -635,7 +666,12 @@ function renderView(
     case "Dashboard":
     default:
       return (
-        <DashboardView actions={actions} data={data} setActiveView={setActiveView} />
+        <DashboardView
+          actions={actions}
+          data={data}
+          microphones={microphones}
+          setActiveView={setActiveView}
+        />
       );
   }
 }
@@ -643,13 +679,15 @@ function renderView(
 function DashboardView({
   actions,
   data,
+  microphones,
   setActiveView,
 }: {
   actions: ViewActions;
   data: DashboardData;
+  microphones: MicrophoneInfo[] | null;
   setActiveView: (view: ViewName) => void;
 }) {
-  const { appState, lastTranscript, recentTranscripts, settings, stats } = data;
+  const { appState, lastTranscript, settings } = data;
 
   return (
     <>
@@ -668,7 +706,7 @@ function DashboardView({
           label="Active microphone"
           onAction={() => setActiveView("Audio")}
           status={<span className="status-dot success" />}
-          value={settings.selectedMicId ?? "Default communications device"}
+          value={microphoneDisplayName(microphones, settings.selectedMicId)}
         />
         <StatusCard
           action="Manage"
@@ -719,13 +757,6 @@ function DashboardView({
           </div>
           <HotkeyList compact settings={settings} />
         </article>
-
-        <RecentTranscriptsCard
-          recentTranscripts={recentTranscripts}
-          setActiveView={setActiveView}
-        />
-
-        <StatsCard stats={stats} />
       </section>
     </>
   );
@@ -1029,24 +1060,6 @@ function HistoryView({
               value={query}
             />
           </div>
-          <select
-            aria-label="Retention"
-            disabled={actions.savingSettings}
-            onChange={(event) =>
-              actions.updateSettings({
-                historyRetentionDays: retentionFromValue(
-                  event.currentTarget.value,
-                ),
-              })
-            }
-            value={retentionToValue(settings.historyRetentionDays)}
-          >
-            <option value="7">7 day retention</option>
-            <option value="30">30 day retention</option>
-            <option value="90">90 day retention</option>
-            <option value="365">365 day retention</option>
-            <option value="forever">Forever</option>
-          </select>
           <button
             className="secondary-button"
             disabled={clearingHistory || total === 0}
@@ -1083,7 +1096,7 @@ function HistoryView({
           <EmptyState message="No local transcript records match this view yet." />
         ) : null}
         {!historyLoading && transcripts.length > 0 ? (
-          <div className="transcript-list">
+          <div className="transcript-list history-scroll">
             {transcripts.map((item) => (
               <TranscriptRow
                 busy={busyTranscriptId === item.id}
@@ -1097,7 +1110,6 @@ function HistoryView({
                 onEditTextChange={setEditText}
                 onPaste={handlePasteTranscript}
                 onSaveEdit={saveEdit}
-                variant="full"
               />
             ))}
           </div>
@@ -1125,6 +1137,20 @@ function HistoryView({
   );
 }
 
+function StatsView({ stats }: { stats: BasicStats }) {
+  return (
+    <section className="view-grid">
+      <article className="panel-card span-2">
+        <div className="section-heading compact">
+          <h2>Basic Stats</h2>
+          <span className="muted">Computed from local history only</span>
+        </div>
+        <StatsCard expanded stats={stats} />
+      </article>
+    </section>
+  );
+}
+
 function SettingsView({
   actions,
   settings,
@@ -1134,73 +1160,6 @@ function SettingsView({
 }) {
   return (
     <section className="view-grid">
-      <SectionPanel
-        icon={<ShieldCheck aria-hidden="true" size={16} />}
-        title="Privacy defaults"
-      >
-        <SettingRow
-          description="Keep searchable local transcript records."
-          label="History enabled"
-        >
-          <Toggle
-            checked={settings.historyEnabled}
-            disabled={actions.savingSettings}
-            label="History enabled"
-            onChange={(historyEnabled) => actions.updateSettings({ historyEnabled })}
-          />
-        </SettingRow>
-        <SettingRow
-          description="Store source clips beside transcript metadata."
-          label="Save raw audio clips"
-        >
-          <Toggle
-            checked={settings.saveAudioClips}
-            disabled={actions.savingSettings}
-            label="Save raw audio clips"
-            onChange={(saveAudioClips) => actions.updateSettings({ saveAudioClips })}
-          />
-        </SettingRow>
-        <SettingRow
-          description="Automatically delete old history."
-          label="Retention"
-        >
-          <select
-            disabled={actions.savingSettings}
-            onChange={(event) =>
-              actions.updateSettings({
-                historyRetentionDays: retentionFromValue(
-                  event.currentTarget.value,
-                ),
-              })
-            }
-            value={retentionToValue(settings.historyRetentionDays)}
-          >
-            <option value="7">7 days</option>
-            <option value="30">30 days</option>
-            <option value="90">90 days</option>
-            <option value="365">365 days</option>
-            <option value="forever">Forever</option>
-          </select>
-        </SettingRow>
-        <SettingRow
-          description="Speech recognition language preference."
-          label="Language"
-        >
-          <select
-            disabled={actions.savingSettings}
-            onChange={(event) =>
-              actions.updateSettings({
-                language: event.currentTarget.value === "auto" ? "auto" : "en",
-              })
-            }
-            value={settings.language}
-          >
-            <option value="auto">Auto detect</option>
-            <option value="en">English</option>
-          </select>
-        </SettingRow>
-      </SectionPanel>
-
       <SectionPanel
         icon={<MonitorCog aria-hidden="true" size={16} />}
         title="App behavior"
@@ -1232,13 +1191,13 @@ function SettingsView({
           />
         </SettingRow>
         <SettingRow
-          description="Show capture state near the cursor."
-          label="Show floating pill"
+          description="Always-on-top capture status overlay."
+          label="Show floating status pill"
         >
           <Toggle
             checked={settings.showFloatingPill}
             disabled={actions.savingSettings}
-            label="Show floating pill"
+            label="Show floating status pill"
             onChange={(showFloatingPill) =>
               actions.updateSettings({ showFloatingPill })
             }
@@ -1269,74 +1228,165 @@ function SettingsView({
 
       <SectionPanel
         icon={<SlidersHorizontal aria-hidden="true" size={16} />}
-        title="Recording rules"
+        title="Output"
       >
         <SettingRow
-          description="Choose which global capture modes are active."
-          label="Recording mode"
+          description="What happens to a finished transcript."
+          label="Output mode"
         >
           <SegmentedControl
             disabled={actions.savingSettings}
-            onChange={(recordingMode) => actions.updateSettings({ recordingMode })}
-            options={recordingModeOptions}
-            selected={settings.recordingMode}
+            onChange={(outputMode) => actions.updateSettings({ outputMode })}
+            options={outputModeOptions}
+            selected={settings.outputMode}
           />
         </SettingRow>
         <SettingRow
-          description="Trim leading and trailing quiet segments."
-          label="Silence trim"
+          description="How transcripts reach the focused app."
+          label="Paste method"
+        >
+          <SegmentedControl
+            disabled={actions.savingSettings}
+            onChange={(pasteMethod) => actions.updateSettings({ pasteMethod })}
+            options={pasteMethodOptions}
+            selected={settings.pasteMethod}
+          />
+        </SettingRow>
+        <SettingRow
+          description="Speech recognition language preference."
+          label="Language"
+        >
+          <select
+            disabled={actions.savingSettings}
+            onChange={(event) =>
+              actions.updateSettings({
+                language: event.currentTarget.value === "auto" ? "auto" : "en",
+              })
+            }
+            value={settings.language}
+          >
+            <option value="auto">Auto detect</option>
+            <option value="en">English</option>
+          </select>
+        </SettingRow>
+      </SectionPanel>
+    </section>
+  );
+}
+
+function DataPrivacyView({
+  actions,
+  settings,
+}: {
+  actions: ViewActions;
+  settings: AppSettings;
+}) {
+  const [clearingHistory, setClearingHistory] = useState(false);
+  const [dataError, setDataError] = useState<string | null>(null);
+
+  const handleClearHistory = useCallback(async () => {
+    if (!window.confirm("Clear all saved transcript history?")) {
+      return;
+    }
+
+    setClearingHistory(true);
+    setDataError(null);
+
+    try {
+      await clearTranscriptHistory();
+      await actions.refresh();
+    } catch (error) {
+      setDataError(commandErrorMessage(error));
+    } finally {
+      setClearingHistory(false);
+    }
+  }, [actions]);
+
+  const handleOpenFolder = useCallback(async (open: () => Promise<void>) => {
+    setDataError(null);
+
+    try {
+      await open();
+    } catch (error) {
+      setDataError(commandErrorMessage(error));
+    }
+  }, []);
+
+  return (
+    <section className="view-grid">
+      <SectionPanel
+        icon={<ShieldCheck aria-hidden="true" size={16} />}
+        title="History"
+      >
+        <SettingRow
+          description="Keep searchable local transcript records."
+          label="History enabled"
         >
           <Toggle
-            checked={settings.silenceTrimEnabled}
+            checked={settings.historyEnabled}
             disabled={actions.savingSettings}
-            label="Silence trim"
-            onChange={(silenceTrimEnabled) =>
-              actions.updateSettings({ silenceTrimEnabled })
-            }
+            label="History enabled"
+            onChange={(historyEnabled) => actions.updateSettings({ historyEnabled })}
           />
         </SettingRow>
         <SettingRow
-          description="Ignore accidental taps shorter than this."
-          label="Minimum duration"
+          description="Automatically delete old history."
+          label="Retention"
         >
-          <input
+          <select
             disabled={actions.savingSettings}
-            min={1}
             onChange={(event) =>
               actions.updateSettings({
-                minRecordingMs: Number(event.currentTarget.value),
+                historyRetentionDays: retentionFromValue(
+                  event.currentTarget.value,
+                ),
               })
             }
-            type="number"
-            value={settings.minRecordingMs}
-          />
+            value={retentionToValue(settings.historyRetentionDays)}
+          >
+            <option value="7">7 days</option>
+            <option value="30">30 days</option>
+            <option value="90">90 days</option>
+            <option value="365">365 days</option>
+            <option value="forever">Forever</option>
+          </select>
         </SettingRow>
         <SettingRow
-          description="Stop long recordings automatically."
-          label="Maximum duration"
+          description="Store source clips beside transcript metadata."
+          label="Save raw audio clips"
         >
-          <input
+          <Toggle
+            checked={settings.saveAudioClips}
             disabled={actions.savingSettings}
-            min={settings.minRecordingMs}
-            onChange={(event) =>
-              actions.updateSettings({
-                maxRecordingMs: Number(event.currentTarget.value),
-              })
-            }
-            type="number"
-            value={settings.maxRecordingMs}
+            label="Save raw audio clips"
+            onChange={(saveAudioClips) => actions.updateSettings({ saveAudioClips })}
           />
         </SettingRow>
       </SectionPanel>
 
       <SectionPanel
-        icon={<MonitorCog aria-hidden="true" size={16} />}
-        title="Data controls"
+        icon={<FolderOpen aria-hidden="true" size={16} />}
+        title="Local data"
       >
+        {dataError ? (
+          <InlineError message={dataError} onRetry={actions.refresh} />
+        ) : null}
         <div className="button-column">
-          <button className="secondary-button" disabled type="button">
+          <button
+            className="secondary-button"
+            onClick={() => void handleOpenFolder(openDataFolder)}
+            type="button"
+          >
             <FolderOpen aria-hidden="true" size={15} />
-            Open data folder pending
+            Open data folder
+          </button>
+          <button
+            className="secondary-button"
+            onClick={() => void handleOpenFolder(openModelsFolder)}
+            type="button"
+          >
+            <FolderOpen aria-hidden="true" size={15} />
+            Open models folder
           </button>
           <button
             className="secondary-button"
@@ -1349,9 +1399,14 @@ function SettingsView({
               ? "Clearing..."
               : "Clear Last Transcript Buffer"}
           </button>
-          <button className="ghost-button danger" disabled type="button">
+          <button
+            className="ghost-button danger"
+            disabled={clearingHistory}
+            onClick={() => void handleClearHistory()}
+            type="button"
+          >
             <Trash2 aria-hidden="true" size={15} />
-            Reset settings pending
+            {clearingHistory ? "Clearing..." : "Clear transcript history"}
           </button>
         </div>
       </SectionPanel>
@@ -1703,18 +1758,6 @@ function HotkeysView({
           </p>
         ) : null}
       </article>
-
-      <article className="panel-card">
-        <div className="section-heading compact">
-          <h2>Capture behavior</h2>
-        </div>
-        <SegmentedControl
-          disabled={actions.savingSettings}
-          onChange={(recordingMode) => actions.updateSettings({ recordingMode })}
-          options={recordingModeOptions}
-          selected={settings.recordingMode}
-        />
-      </article>
     </section>
   );
 }
@@ -1979,11 +2022,18 @@ function ModelsView({
         <div className="section-heading compact">
           <h2>Storage</h2>
         </div>
-        <code>LocalDictate app data / models</code>
         <div className="button-row">
-          <button className="secondary-button" disabled type="button">
+          <button
+            className="secondary-button"
+            onClick={() => {
+              void openModelsFolder().catch((error) =>
+                setModelsError(commandErrorMessage(error)),
+              );
+            }}
+            type="button"
+          >
             <FolderOpen aria-hidden="true" size={15} />
-            Open folder pending
+            Open models folder
           </button>
         </div>
       </article>
@@ -2003,6 +2053,9 @@ function AudioView({
   const [microphonesError, setMicrophonesError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [testingMic, setTestingMic] = useState(false);
+  const [hasTestClip, setHasTestClip] = useState(false);
+  const [playingTestClip, setPlayingTestClip] = useState(false);
+  const [testClipError, setTestClipError] = useState<string | null>(null);
 
   const loadMicrophones = useCallback(async () => {
     setMicrophonesLoading(true);
@@ -2056,9 +2109,11 @@ function AudioView({
   const handleRecordTestClip = useCallback(async () => {
     setTestingMic(true);
     setMicrophonesError(null);
+    setTestClipError(null);
 
     try {
       await recordTestClip(1600);
+      setHasTestClip(true);
       await loadMicrophones();
       await actions.refresh();
     } catch (error) {
@@ -2067,6 +2122,30 @@ function AudioView({
       setTestingMic(false);
     }
   }, [actions, loadMicrophones]);
+
+  const handlePlayTestClip = useCallback(async () => {
+    setPlayingTestClip(true);
+    setTestClipError(null);
+
+    try {
+      const base64Wav = await getTestClipAudio();
+      const bytes = Uint8Array.from(atob(base64Wav), (char) =>
+        char.charCodeAt(0),
+      );
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      const audio = new Audio(url);
+      const finish = () => {
+        URL.revokeObjectURL(url);
+        setPlayingTestClip(false);
+      };
+      audio.onended = finish;
+      audio.onerror = finish;
+      await audio.play();
+    } catch (error) {
+      setTestClipError(commandErrorMessage(error));
+      setPlayingTestClip(false);
+    }
+  }, []);
 
   return (
     <section className="split-grid">
@@ -2101,7 +2180,7 @@ function AudioView({
           <div style={{ width: `${Math.max(4, audioLevel)}%` }} />
         </div>
 
-        <div className="control-grid">
+        <div className="control-grid single">
           <label>
             Microphone
             <select
@@ -2129,10 +2208,6 @@ function AudioView({
               ))}
             </select>
           </label>
-          <label>
-            Target format
-            <input readOnly value="16 kHz mono PCM WAV" />
-          </label>
         </div>
 
         <div className="button-row">
@@ -2150,11 +2225,19 @@ function AudioView({
             <Mic aria-hidden="true" size={16} />
             {testingMic ? "Testing..." : "Record test"}
           </button>
-          <button className="secondary-button" disabled type="button">
+          <button
+            className="secondary-button"
+            disabled={!hasTestClip || playingTestClip || testingMic}
+            onClick={() => void handlePlayTestClip()}
+            type="button"
+          >
             <Play aria-hidden="true" size={15} />
-            Playback pending
+            {playingTestClip ? "Playing..." : "Play test"}
           </button>
         </div>
+        {testClipError ? (
+          <p className="field-error">{testClipError}</p>
+        ) : null}
       </article>
 
       <div className="stack">
@@ -2204,14 +2287,6 @@ function AudioView({
               value={settings.maxRecordingMs}
             />
           </SettingRow>
-          <SettingRow
-            description="Preferred file shape for transcription."
-            label="Target format"
-          >
-            <select disabled value="wav">
-              <option value="wav">16 kHz mono PCM WAV</option>
-            </select>
-          </SettingRow>
           <SettingRow description="Keep original clips for review." label="Save raw audio">
             <Toggle
               checked={settings.saveAudioClips}
@@ -2244,8 +2319,7 @@ function AudioView({
               {microphones.map((microphone) => (
                 <div className="device-row" key={microphone.id}>
                   <div>
-                    <strong>{microphone.name}</strong>
-                    <span>{microphone.endpointId ?? microphone.id}</span>
+                    <strong title={microphone.name}>{microphone.name}</strong>
                   </div>
                   <span
                     className={
@@ -2315,18 +2389,6 @@ function AboutView() {
           <code>%APPDATA%/LocalDictate/</code>
         </SettingRow>
       </SectionPanel>
-      <SectionPanel title="Resources">
-        <div className="button-column">
-          <button className="secondary-button" disabled type="button">
-            <FolderOpen aria-hidden="true" size={15} />
-            Open docs pending
-          </button>
-          <button className="secondary-button" disabled type="button">
-            <Archive aria-hidden="true" size={15} />
-            View licenses pending
-          </button>
-        </div>
-      </SectionPanel>
     </section>
   );
 }
@@ -2386,76 +2448,40 @@ function LastTranscriptCard({
       )}
 
       <div className="button-row">
-        <button
-          className="primary-button"
+        <IconButton
           disabled={!hasTranscript || outputBusy}
+          label={pasting ? "Inserting..." : "Insert into focused app"}
           onClick={() => void onPaste()}
-          type="button"
         >
-          <ClipboardPaste aria-hidden="true" size={16} />
-          {pasting ? "Inserting..." : "Insert"}
-        </button>
-        <button className="secondary-button" disabled type="button">
-          <Pencil aria-hidden="true" size={15} />
-          Edit pending
-        </button>
-        <button
-          className="secondary-button"
+          <ClipboardPaste aria-hidden="true" size={15} />
+        </IconButton>
+        <IconButton
           disabled={!hasTranscript || outputBusy}
+          label={copying ? "Copying..." : "Copy to clipboard"}
           onClick={() => void onCopy()}
-          type="button"
         >
           <Copy aria-hidden="true" size={15} />
-          {copying ? "Copying..." : "Copy"}
-        </button>
-        <button
-          className="ghost-button"
+        </IconButton>
+        <IconButton
+          danger
           disabled={!hasTranscript || outputBusy}
+          label={clearing ? "Clearing..." : "Clear buffer"}
           onClick={() => void onClear()}
-          type="button"
         >
           <Eraser aria-hidden="true" size={15} />
-          {clearing ? "Clearing..." : "Clear"}
-        </button>
+        </IconButton>
       </div>
     </article>
   );
 }
 
-function RecentTranscriptsCard({
-  recentTranscripts,
-  setActiveView,
+function StatsCard({
+  expanded = false,
+  stats,
 }: {
-  recentTranscripts: Transcript[];
-  setActiveView: (view: ViewName) => void;
+  expanded?: boolean;
+  stats: BasicStats;
 }) {
-  return (
-    <article className="panel-card recent-card">
-      <div className="section-heading compact">
-        <h2>Recent Transcripts</h2>
-        <button
-          className="ghost-button"
-          onClick={() => setActiveView("History")}
-          type="button"
-        >
-          <Search aria-hidden="true" size={15} />
-          Search
-        </button>
-      </div>
-      {recentTranscripts.length === 0 ? (
-        <EmptyState message="No saved transcript history yet." />
-      ) : (
-        <div className="transcript-list">
-          {recentTranscripts.slice(0, 3).map((item) => (
-            <TranscriptRow item={item} key={item.id} variant="compact" />
-          ))}
-        </div>
-      )}
-    </article>
-  );
-}
-
-function StatsCard({ stats }: { stats: BasicStats }) {
   const statRows = [
     { label: "Words today", value: formatNumber(stats.wordsToday) },
     { label: "Dictations today", value: formatNumber(stats.dictationsToday) },
@@ -2476,20 +2502,14 @@ function StatsCard({ stats }: { stats: BasicStats }) {
   ];
 
   return (
-    <article className="panel-card">
-      <div className="section-heading compact">
-        <h2>Basic Stats</h2>
-        <span className="muted">Local history</span>
-      </div>
-      <div className="stats-grid">
-        {statRows.map((stat) => (
-          <div className="stat-tile" key={stat.label}>
-            <span>{stat.label}</span>
-            <strong>{stat.value}</strong>
-          </div>
-        ))}
-      </div>
-    </article>
+    <div className={expanded ? "stats-grid wide" : "stats-grid"}>
+      {statRows.map((stat) => (
+        <div className="stat-tile" key={stat.label}>
+          <span>{stat.label}</span>
+          <strong title={stat.value}>{stat.value}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -2597,7 +2617,6 @@ function TranscriptRow({
   onEditTextChange,
   onPaste,
   onSaveEdit,
-  variant,
 }: {
   busy?: boolean;
   editText?: string;
@@ -2609,13 +2628,11 @@ function TranscriptRow({
   onEditTextChange?: (text: string) => void;
   onPaste?: (id: string) => Promise<void>;
   onSaveEdit?: (id: string) => Promise<void>;
-  variant: "compact" | "full";
 }) {
-  const isFull = variant === "full";
   const isEditing = editText !== undefined;
 
   return (
-    <div className={isFull ? "history-row" : "transcript-row"}>
+    <div className="history-row">
       <div>
         <strong>{transcriptTitle(item)}</strong>
         {isEditing ? (
@@ -2626,77 +2643,66 @@ function TranscriptRow({
             value={editText}
           />
         ) : (
-          <p>{item.text}</p>
+          <p title={item.text}>{item.text}</p>
         )}
         <span>{transcriptMeta(item)}</span>
       </div>
       <div className="row-actions">
-        {isFull ? (
-          <span className="pill preserve">
-            {item.outputMode ? outputModeLabel(item.outputMode) : "Saved"}
-          </span>
-        ) : null}
-        <button
-          className={isFull ? "ghost-button" : "compact-action"}
-          disabled={busy || !onPaste}
-          onClick={() => void onPaste?.(item.id)}
-          type="button"
-        >
-          <ClipboardPaste aria-hidden="true" size={15} />
-          {busy ? "Working..." : "Insert"}
-        </button>
-        <button
-          className={isFull ? "ghost-button" : "compact-action"}
-          disabled={busy || !onCopy}
-          onClick={() => void onCopy?.(item.id)}
-          type="button"
-        >
-          <Copy aria-hidden="true" size={15} />
-          Copy
-        </button>
-        {isFull ? (
-          isEditing ? (
-            <>
-              <button
-                className="secondary-button"
-                disabled={busy || !editText.trim()}
-                onClick={() => void onSaveEdit?.(item.id)}
-                type="button"
-              >
-                Save
-              </button>
-              <button
-                className="ghost-button"
-                disabled={busy}
-                onClick={onCancelEdit}
-                type="button"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="ghost-button"
-                disabled={busy || !onEdit}
-                onClick={() => onEdit?.(item)}
-                type="button"
-              >
-                <Pencil aria-hidden="true" size={15} />
-                Edit
-              </button>
-              <button
-                className="ghost-button danger"
-                disabled={busy || !onDelete}
-                onClick={() => void onDelete?.(item.id)}
-                type="button"
-              >
-                <Trash2 aria-hidden="true" size={15} />
-                Delete
-              </button>
-            </>
-          )
-        ) : null}
+        <span className="pill preserve">
+          {item.outputMode ? outputModeLabel(item.outputMode) : "Saved"}
+        </span>
+        {isEditing ? (
+          <>
+            <button
+              className="secondary-button"
+              disabled={busy || !editText.trim()}
+              onClick={() => void onSaveEdit?.(item.id)}
+              type="button"
+            >
+              Save
+            </button>
+            <button
+              className="ghost-button"
+              disabled={busy}
+              onClick={onCancelEdit}
+              type="button"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <IconButton
+              disabled={busy || !onPaste}
+              label={busy ? "Working..." : "Insert into focused app"}
+              onClick={() => void onPaste?.(item.id)}
+            >
+              <ClipboardPaste aria-hidden="true" size={15} />
+            </IconButton>
+            <IconButton
+              disabled={busy || !onCopy}
+              label="Copy to clipboard"
+              onClick={() => void onCopy?.(item.id)}
+            >
+              <Copy aria-hidden="true" size={15} />
+            </IconButton>
+            <IconButton
+              disabled={busy || !onEdit}
+              label="Edit transcript"
+              onClick={() => onEdit?.(item)}
+            >
+              <Pencil aria-hidden="true" size={15} />
+            </IconButton>
+            <IconButton
+              danger
+              disabled={busy || !onDelete}
+              label="Delete transcript"
+              onClick={() => void onDelete?.(item.id)}
+            >
+              <Trash2 aria-hidden="true" size={15} />
+            </IconButton>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2746,7 +2752,6 @@ function IconButton({
       className={danger ? "icon-button danger" : "icon-button"}
       disabled={disabled}
       onClick={onClick}
-      title={label}
       type="button"
     >
       {children}
@@ -2791,58 +2796,6 @@ function StatePill({ appState }: { appState: AppStateSnapshot }) {
     <span className={className} title={label}>
       {appState.status}
     </span>
-  );
-}
-
-function FloatingPill({
-  appState,
-  onStop,
-  outputMode,
-  pasteHotkey,
-}: {
-  appState: AppStateSnapshot;
-  onStop: () => Promise<void>;
-  outputMode: OutputMode;
-  pasteHotkey: string;
-}) {
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    if (appState.status === "Idle" || appState.status === "Paused") {
-      setVisible(false);
-      return;
-    }
-
-    setVisible(true);
-
-    if (appState.status === "Ready") {
-      const timer = window.setTimeout(() => setVisible(false), 5200);
-      return () => window.clearTimeout(timer);
-    }
-  }, [appState.status, appState.updatedAt]);
-
-  if (!visible) {
-    return null;
-  }
-
-  const lines = floatingPillLines(appState, outputMode, pasteHotkey);
-  const isRecording = appState.status === "Recording";
-
-  return (
-    <div
-      className={`floating-pill ${stateTone(appState.status)}${
-        isRecording ? " clickable" : ""
-      }`}
-      onClick={isRecording ? () => void onStop() : undefined}
-      role={isRecording ? "button" : "status"}
-      title={isRecording ? "Click to stop recording" : undefined}
-    >
-      <span className="floating-pulse" aria-hidden="true" />
-      <div>
-        <strong>{lines[0]}</strong>
-        {lines[1] ? <span>{lines[1]}</span> : null}
-      </div>
-    </div>
   );
 }
 
@@ -2962,7 +2915,10 @@ function routeToView(route: string): ViewName | null {
     dashboard: "Dashboard",
     transcribe: "Transcribe",
     history: "History",
+    stats: "Stats",
     settings: "Settings",
+    data: "Data & Privacy",
+    privacy: "Data & Privacy",
     hotkeys: "Hotkeys",
     models: "Models",
     audio: "Audio",
@@ -3002,42 +2958,6 @@ function stateTone(status: AppStateSnapshot["status"]) {
     default:
       return "idle";
   }
-}
-
-function floatingPillLines(
-  appState: AppStateSnapshot,
-  outputMode: OutputMode,
-  pasteHotkey: string,
-) {
-  if (appState.status === "Recording") {
-    return ["Recording...", "Click here or release hotkey to stop"];
-  }
-
-  if (appState.status === "Stopping") {
-    return ["Saving audio...", "Preparing local transcription"];
-  }
-
-  if (appState.status === "Transcribing") {
-    return ["Transcribing...", "Whisper is running locally"];
-  }
-
-  if (appState.status === "Pasting") {
-    return ["Inserting transcript...", "Keeping clipboard behavior intact"];
-  }
-
-  if (appState.status === "Ready") {
-    if (outputMode === "save_only") {
-      return ["Saved to Last Transcript", "Clipboard preserved"];
-    }
-
-    return ["Transcript ready", `${formatHotkey(pasteHotkey)} to insert`];
-  }
-
-  if (appState.status === "Error") {
-    return ["Needs attention", appState.error?.message ?? "Check LocalDictate"];
-  }
-
-  return ["Ready for dictation", ""];
 }
 
 function modelStatusLabel(status: ModelInfo["status"]) {
@@ -3098,13 +3018,32 @@ function selectedMicrophoneLabel(
   selectedMicId: string | null,
 ) {
   if (!selectedMicId) {
-    return microphones.find((microphone) => microphone.isDefault)?.name ?? "Default input device";
+    return (
+      microphones.find((microphone) => microphone.isDefault)?.name ??
+      "Default input device"
+    );
   }
 
+  // Never render raw device IDs; show a neutral placeholder until resolved.
   return (
     microphones.find((microphone) => microphone.id === selectedMicId)?.name ??
-    selectedMicId
+    "—"
   );
+}
+
+function microphoneDisplayName(
+  microphones: MicrophoneInfo[] | null,
+  selectedMicId: string | null,
+) {
+  if (!selectedMicId) {
+    return "Default input device";
+  }
+
+  if (!microphones) {
+    return "—";
+  }
+
+  return selectedMicrophoneLabel(microphones, selectedMicId);
 }
 
 function recordingStageTitle(status: AppStateSnapshot["status"]) {

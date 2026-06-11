@@ -619,7 +619,7 @@ fn model_info_for_catalog(
     })
 }
 
-fn models_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
+pub fn models_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
     Ok(app_data_dir(app)?.join("models"))
 }
 

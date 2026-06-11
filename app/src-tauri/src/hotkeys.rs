@@ -12,11 +12,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 use crate::{
-    app_state::AppStatus,
-    commands::BackendState,
-    error::CommandError,
-    settings::{HotkeySettings, RecordingMode},
-    tray,
+    app_state::AppStatus, audio, commands::BackendState, error::CommandError,
+    settings::HotkeySettings, tray,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -99,6 +96,35 @@ pub struct HotkeyBindingStatus {
     pub error: Option<String>,
 }
 
+/// One hotkey binding that could not be registered. Serialized into the
+/// "localdictate:hotkey-registration-failed" event payload, so `action`
+/// serializes as the camelCase action name (e.g. "holdToTalk").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyRegistrationFailure {
+    pub action: HotkeyAction,
+    pub shortcut: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RegistrationFailedEvent<'a> {
+    failures: &'a [HotkeyRegistrationFailure],
+}
+
+/// Notifies the frontend that one or more hotkey bindings could not be
+/// registered. No-op when `failures` is empty.
+pub fn emit_registration_failures(app: &AppHandle, failures: &[HotkeyRegistrationFailure]) {
+    if failures.is_empty() {
+        return;
+    }
+
+    let _ = app.emit(
+        "localdictate:hotkey-registration-failed",
+        RegistrationFailedEvent { failures },
+    );
+}
+
 /// A shortcut made up exclusively of modifier keys (e.g. "Ctrl+Shift").
 /// The global-shortcut plugin cannot register these because they have no key
 /// code, so on Windows a polling watcher thread drives them instead.
@@ -169,6 +195,7 @@ pub struct HotkeyRuntimeState {
     pressed_actions: Mutex<HashSet<HotkeyAction>>,
     chord_bindings: Mutex<Vec<(ModifierChord, HotkeyAction)>>,
     chord_watcher: Mutex<Option<ChordWatcherHandle>>,
+    registration_errors: Mutex<HashMap<HotkeyAction, String>>,
 }
 
 impl HotkeyRuntimeState {
@@ -222,15 +249,36 @@ impl HotkeyRuntimeState {
             .ok()
             .and_then(|mut guard| guard.take())
     }
+
+    fn store_registration_errors(&self, failures: &[HotkeyRegistrationFailure]) {
+        if let Ok(mut errors) = self.registration_errors.lock() {
+            *errors = failures
+                .iter()
+                .map(|failure| (failure.action, failure.message.clone()))
+                .collect();
+        }
+    }
+
+    fn registration_error_for(&self, action: HotkeyAction) -> Option<String> {
+        self.registration_errors
+            .lock()
+            .ok()
+            .and_then(|errors| errors.get(&action).cloned())
+    }
 }
 
 pub fn setup(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandError> {
     app.manage(HotkeyRuntimeState::default());
     validate_hotkeys(hotkeys)?;
 
-    if let Err(error) = register_initial_hotkeys(app, hotkeys) {
-        eprintln!("{}", error);
+    let failures = register_hotkey_set(app, hotkeys);
+    for failure in &failures {
+        eprintln!(
+            "Hotkey registration failed for {:?} ({}): {}",
+            failure.action, failure.shortcut, failure.message
+        );
     }
+    emit_registration_failures(app, &failures);
 
     Ok(())
 }
@@ -280,77 +328,83 @@ pub fn validate_hotkeys(hotkeys: &HotkeySettings) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// Swaps the registered hotkey set. Registration is best-effort per binding:
+/// the returned vector lists the bindings in `next` that could not be
+/// registered (working bindings stay registered). Returns Err only when
+/// `next` fails validation, in which case nothing is changed.
 pub fn replace_hotkeys(
     app: &AppHandle,
     previous: &HotkeySettings,
     next: &HotkeySettings,
-) -> Result<(), CommandError> {
+) -> Result<Vec<HotkeyRegistrationFailure>, CommandError> {
     validate_hotkeys(next)?;
 
     unregister_hotkey_set(app, previous);
 
-    if let Err(error) = register_hotkey_set(app, next) {
-        let _ = register_hotkey_set(app, previous);
-        return Err(error);
-    }
-
-    Ok(())
-}
-
-fn register_initial_hotkeys(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandError> {
-    validate_hotkeys(hotkeys)?;
-    register_hotkey_set(app, hotkeys)
+    Ok(register_hotkey_set(app, next))
 }
 
 /// Registers every binding in `hotkeys`: plugin shortcuts through the
 /// global-shortcut plugin, modifier-only chords through the Windows chord
-/// watcher. On failure all plugin shortcuts registered so far are rolled back
-/// and the chord watcher is left untouched.
-fn register_hotkey_set(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandError> {
-    let mut registered = Vec::<Shortcut>::new();
+/// watcher. Each binding is attempted independently; failures are collected
+/// and returned while every binding that did register stays registered.
+fn register_hotkey_set(
+    app: &AppHandle,
+    hotkeys: &HotkeySettings,
+) -> Vec<HotkeyRegistrationFailure> {
     let mut actions_by_id = HashMap::<u32, HotkeyAction>::new();
     let mut chord_bindings = Vec::<(ModifierChord, HotkeyAction)>::new();
+    let mut failures = Vec::<HotkeyRegistrationFailure>::new();
+    let mut record_failure = |action: HotkeyAction, shortcut: &str, message: String| {
+        failures.push(HotkeyRegistrationFailure {
+            action,
+            shortcut: shortcut.to_string(),
+            message,
+        });
+    };
 
     for action in HOTKEY_ACTIONS {
         let shortcut_text = action.shortcut(hotkeys);
 
-        match parse_shortcut(shortcut_text)? {
-            ParsedShortcut::Plugin(shortcut) => {
-                if let Err(error) = app.global_shortcut().register(shortcut) {
-                    unregister_shortcuts(app, &registered);
-                    return Err(CommandError::hotkey_registration_failed(
+        match parse_shortcut(shortcut_text) {
+            Ok(ParsedShortcut::Plugin(shortcut)) => {
+                match app.global_shortcut().register(shortcut) {
+                    Ok(()) => {
+                        actions_by_id.insert(shortcut.id(), action);
+                    }
+                    Err(error) => record_failure(
+                        action,
                         shortcut_text,
-                        error,
-                    ));
+                        CommandError::hotkey_registration_failed(shortcut_text, error).message,
+                    ),
                 }
-
-                actions_by_id.insert(shortcut.id(), action);
-                registered.push(shortcut);
             }
-            ParsedShortcut::ModifierChord(chord) => {
-                if !cfg!(windows) {
-                    unregister_shortcuts(app, &registered);
-                    return Err(CommandError::new(
-                        "hotkey_registration_failed",
+            Ok(ParsedShortcut::ModifierChord(chord)) => {
+                if cfg!(windows) {
+                    chord_bindings.push((chord, action));
+                } else {
+                    record_failure(
+                        action,
+                        shortcut_text,
                         format!(
                             "Could not register {}. Modifier-only shortcuts are only supported on Windows.",
                             shortcut_text
                         ),
-                    ));
+                    );
                 }
-
-                chord_bindings.push((chord, action));
             }
+            Err(error) => record_failure(action, shortcut_text, error.message),
         }
     }
 
     if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
         runtime.replace_bindings(actions_by_id);
+        runtime.store_registration_errors(&failures);
     }
 
     configure_chord_watcher(app, chord_bindings);
 
-    Ok(())
+    failures
 }
 
 /// Stops any running chord watcher thread, stores the new chord bindings (so
@@ -404,25 +458,34 @@ fn configure_chord_watcher(app: &AppHandle, bindings: Vec<(ModifierChord, Hotkey
 }
 
 pub fn status(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<HotkeyStatus, CommandError> {
+    let runtime = app.try_state::<HotkeyRuntimeState>();
     let mut bindings = Vec::new();
 
     for action in HOTKEY_ACTIONS {
         let shortcut = action.shortcut(hotkeys);
+        let registration_error = runtime
+            .as_ref()
+            .and_then(|runtime| runtime.registration_error_for(action));
         let (normalized_shortcut, registered, error) = match parse_shortcut(shortcut) {
-            Ok(ParsedShortcut::Plugin(parsed)) => (
-                Some(parsed.to_string()),
-                app.global_shortcut().is_registered(parsed),
-                None,
-            ),
+            Ok(ParsedShortcut::Plugin(parsed)) => {
+                let registered = app.global_shortcut().is_registered(parsed);
+                let error = if registered { None } else { registration_error };
+
+                (Some(parsed.to_string()), registered, error)
+            }
             Ok(ParsedShortcut::ModifierChord(chord)) => {
-                let registered = app
-                    .try_state::<HotkeyRuntimeState>()
+                let registered = runtime
+                    .as_ref()
                     .map(|runtime| runtime.chord_is_registered(chord))
                     .unwrap_or(false);
-                let error = if cfg!(windows) {
+                let error = if registered {
                     None
                 } else {
-                    Some("Modifier-only shortcuts are only supported on Windows.".to_string())
+                    registration_error.or_else(|| {
+                        (!cfg!(windows)).then(|| {
+                            "Modifier-only shortcuts are only supported on Windows.".to_string()
+                        })
+                    })
                 };
 
                 (Some(chord.label()), registered, error)
@@ -451,37 +514,26 @@ pub fn status(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<HotkeyStatus,
 fn handle_pressed(app: &AppHandle, action: HotkeyAction) {
     let _ = app.emit("localdictate:hotkey-action", action.event_name());
 
-    match action {
-        HotkeyAction::HoldToTalk => {
-            if recording_mode_allows(app, |mode| {
-                matches!(mode, RecordingMode::Hold | RecordingMode::Both)
-            }) {
-                let _ = tray::start_dictation(app);
-            }
-        }
-        HotkeyAction::ToggleDictation => {
-            if recording_mode_allows(app, |mode| {
-                matches!(mode, RecordingMode::Toggle | RecordingMode::Both)
-            }) {
-                let _ = toggle_dictation(app);
-            }
-        }
-        HotkeyAction::PasteLastTranscript => {
-            let _ = tray::paste_last_transcript(app);
-        }
-        HotkeyAction::OpenDashboard => {
-            let _ = tray::open_dashboard(app, None);
-        }
+    // Hold-to-talk and toggle both always work, regardless of the (legacy)
+    // recordingMode setting; gating either one made the other hotkey a
+    // silent no-op.
+    let result = match action {
+        HotkeyAction::HoldToTalk => tray::start_dictation(app),
+        HotkeyAction::ToggleDictation => toggle_dictation(app),
+        HotkeyAction::PasteLastTranscript => tray::paste_last_transcript(app),
+        HotkeyAction::OpenDashboard => tray::open_dashboard(app, None),
+    };
+
+    if let Err(error) = result {
+        audio::emit_recording_error(app, error);
     }
 }
 
 fn handle_released(app: &AppHandle, action: HotkeyAction) {
-    if action == HotkeyAction::HoldToTalk
-        && recording_mode_allows(app, |mode| {
-            matches!(mode, RecordingMode::Hold | RecordingMode::Both)
-        })
-    {
-        let _ = tray::stop_dictation(app);
+    if action == HotkeyAction::HoldToTalk {
+        if let Err(error) = tray::stop_dictation(app) {
+            audio::emit_recording_error(app, error);
+        }
     }
 }
 
@@ -494,13 +546,6 @@ fn toggle_dictation(app: &AppHandle) -> Result<(), CommandError> {
         AppStatus::Recording => tray::stop_dictation(app),
         _ => Ok(()),
     }
-}
-
-fn recording_mode_allows(app: &AppHandle, predicate: impl FnOnce(RecordingMode) -> bool) -> bool {
-    app.try_state::<BackendState>()
-        .and_then(|state| state.db().ok().and_then(|db| db.get_settings().ok()))
-        .map(|settings| predicate(settings.recording_mode))
-        .unwrap_or(false)
 }
 
 fn unregister_hotkey_set(app: &AppHandle, hotkeys: &HotkeySettings) {

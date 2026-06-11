@@ -1,5 +1,8 @@
 use std::sync::Mutex;
 
+use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
+
 use crate::{
     app_state::{AppEvent, AppStateMachine, AppStateSnapshot},
     audio::{self, MicrophoneInfo, RecordingResult, RecordingSessionInfo, StartRecordingRequest},
@@ -85,8 +88,9 @@ pub fn update_settings(
 
     let previous = state.db()?.get_settings()?;
 
+    let mut hotkey_failures = Vec::new();
     if previous.hotkeys != settings.hotkeys {
-        hotkeys::replace_hotkeys(&app, &previous.hotkeys, &settings.hotkeys)?;
+        hotkey_failures = hotkeys::replace_hotkeys(&app, &previous.hotkeys, &settings.hotkeys)?;
     }
 
     if let Err(error) = state.db()?.save_settings(&settings) {
@@ -96,6 +100,8 @@ pub fn update_settings(
 
         return Err(error);
     }
+
+    hotkeys::emit_registration_failures(&app, &hotkey_failures);
 
     if previous.history_retention_days != settings.history_retention_days
         || (!previous.history_enabled && settings.history_enabled)
@@ -208,7 +214,16 @@ pub fn rebind_hotkey(
 
     action.set_shortcut(&mut next_hotkeys, shortcut);
     hotkeys::validate_hotkeys(&next_hotkeys)?;
-    hotkeys::replace_hotkeys(&app, &previous_hotkeys, &next_hotkeys)?;
+    let failures = hotkeys::replace_hotkeys(&app, &previous_hotkeys, &next_hotkeys)?;
+
+    // When the binding being changed is the one that failed, restore the
+    // previous set (other bindings stay registered either way) and surface
+    // the error inline to the rebind UI.
+    if let Some(failure) = failures.iter().find(|failure| failure.action == action) {
+        let message = failure.message.clone();
+        let _ = hotkeys::replace_hotkeys(&app, &next_hotkeys, &previous_hotkeys);
+        return Err(CommandError::new("hotkey_registration_failed", message));
+    }
 
     settings.hotkeys = next_hotkeys.clone();
     if let Err(error) = state.db()?.save_settings(&settings) {
@@ -216,6 +231,7 @@ pub fn rebind_hotkey(
         return Err(error);
     }
 
+    hotkeys::emit_registration_failures(&app, &failures);
     hotkeys::status(&app, &settings.hotkeys)
 }
 
@@ -229,7 +245,7 @@ pub fn reset_hotkeys_to_defaults(
     let next_hotkeys = AppSettings::default().hotkeys;
 
     hotkeys::validate_hotkeys(&next_hotkeys)?;
-    hotkeys::replace_hotkeys(&app, &previous_hotkeys, &next_hotkeys)?;
+    let failures = hotkeys::replace_hotkeys(&app, &previous_hotkeys, &next_hotkeys)?;
 
     settings.hotkeys = next_hotkeys.clone();
     if let Err(error) = state.db()?.save_settings(&settings) {
@@ -237,6 +253,7 @@ pub fn reset_hotkeys_to_defaults(
         return Err(error);
     }
 
+    hotkeys::emit_registration_failures(&app, &failures);
     hotkeys::status(&app, &settings.hotkeys)
 }
 
@@ -274,6 +291,49 @@ pub fn record_test_clip(
     duration_ms: Option<u64>,
 ) -> Result<RecordingResult, CommandError> {
     audio::record_test_clip_for_app(&app, duration_ms)
+}
+
+#[tauri::command]
+pub fn get_test_clip_audio(app: tauri::AppHandle) -> Result<String, CommandError> {
+    audio::get_test_clip_audio_for_app(&app)
+}
+
+#[tauri::command]
+pub fn open_data_folder(app: tauri::AppHandle) -> Result<(), CommandError> {
+    let dir = app.path().app_data_dir().map_err(|error| {
+        CommandError::new(
+            "app_data_dir_unavailable",
+            format!(
+                "Could not locate LocalDictate app data directory. {}",
+                error
+            ),
+        )
+    })?;
+    open_folder(&app, dir)
+}
+
+#[tauri::command]
+pub fn open_models_folder(app: tauri::AppHandle) -> Result<(), CommandError> {
+    let dir = model_manager::models_dir(&app)?;
+    open_folder(&app, dir)
+}
+
+fn open_folder(app: &tauri::AppHandle, dir: std::path::PathBuf) -> Result<(), CommandError> {
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CommandError::new(
+            "open_folder_failed",
+            format!("Could not create folder {}. {}", dir.display(), error),
+        )
+    })?;
+
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|error| {
+            CommandError::new(
+                "open_folder_failed",
+                format!("Could not open folder {}. {}", dir.display(), error),
+            )
+        })
 }
 
 #[tauri::command]

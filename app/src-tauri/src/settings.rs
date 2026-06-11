@@ -8,6 +8,9 @@ pub struct AppSettings {
     pub show_floating_pill: bool,
     pub notifications_enabled: bool,
     pub sounds_enabled: bool,
+    /// Inert: hold-to-talk and toggle hotkeys both always work now. The field
+    /// is kept so existing DB settings JSON (and serde round-trips) keep
+    /// working unchanged.
     pub recording_mode: RecordingMode,
     pub min_recording_ms: u32,
     pub max_recording_ms: u32,
@@ -20,6 +23,12 @@ pub struct AppSettings {
     pub history_enabled: bool,
     pub save_audio_clips: bool,
     pub history_retention_days: Option<u16>,
+    /// Saved floating pill window position (physical pixels). None means the
+    /// frontend places the pill at its bottom-center default.
+    #[serde(default)]
+    pub pill_x: Option<i32>,
+    #[serde(default)]
+    pub pill_y: Option<i32>,
     pub hotkeys: HotkeySettings,
 }
 
@@ -119,6 +128,8 @@ impl Default for AppSettings {
             history_enabled: true,
             save_audio_clips: false,
             history_retention_days: Some(30),
+            pill_x: None,
+            pill_y: None,
             hotkeys: HotkeySettings::default(),
         }
     }
