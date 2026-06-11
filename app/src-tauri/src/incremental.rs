@@ -40,6 +40,10 @@ use crate::{
 const SEGMENT_SILENCE_MS: u64 = 500;
 /// Hard cap on segment length, comfortably inside Whisper's 30 s window.
 const SEGMENT_MAX_MS: u64 = 25_000;
+/// Trailing silence appended to each segment WAV. Whisper tends to drop the
+/// final word when the audio ends abruptly mid-/right-after speech, which the
+/// tail segment otherwise does.
+const SEGMENT_TAIL_PAD_MS: u64 = 300;
 /// How much accumulated transcript text is appended to the vocabulary prompt
 /// for cross-segment continuity.
 const PROMPT_CONTEXT_CHARS: usize = 200;
@@ -324,8 +328,10 @@ impl WorkerLink {
     }
 
     fn send_segment(&mut self, samples: Vec<f32>) {
-        let normalized =
+        let mut normalized =
             audio::normalize_to_whisper_wav_samples(&samples, self.segmenter.sample_rate);
+        let pad_samples = (audio::TARGET_SAMPLE_RATE as u64 * SEGMENT_TAIL_PAD_MS / 1_000) as usize;
+        normalized.extend(std::iter::repeat(0.0).take(pad_samples));
         let path = self.temp_dir.join(format!(
             "{}-segment-{}.wav",
             self.session_id, self.next_segment

@@ -33,7 +33,7 @@ use crate::{
     settings::AppSettings,
 };
 
-const TARGET_SAMPLE_RATE: u32 = 16_000;
+pub(crate) const TARGET_SAMPLE_RATE: u32 = 16_000;
 const TARGET_CHANNELS: u16 = 1;
 const TARGET_BITS_PER_SAMPLE: u16 = 16;
 #[cfg(windows)]
@@ -49,7 +49,12 @@ pub(crate) const AUTO_STOP_SPEECH_RMS: f32 = 0.03;
 pub(crate) const SILENCE_RMS_THRESHOLD: f32 = 0.015;
 /// Audio kept on each side of detected speech when trimming silence, so word
 /// onsets/tails are not clipped.
-const TRIM_PADDING_MS: u32 = 150;
+const TRIM_PADDING_MS: u32 = 300;
+/// How long capture keeps running after a user-initiated stop. People press
+/// stop while the last word is still leaving their mouth (and in WASAPI
+/// buffers); cutting the stream at the keypress clips it.
+#[cfg(windows)]
+const STOP_GRACE_MS: u64 = 400;
 /// RMS analysis window for silence trimming.
 const TRIM_WINDOW_MS: u32 = 20;
 
@@ -367,6 +372,13 @@ impl AudioService {
         };
 
         session.timeout_active.store(false, Ordering::SeqCst);
+        // Completed means the user chose to stop (toggle press / hold
+        // release): keep capturing briefly so the tail of the final word is
+        // not cut off at the keypress. Cancel and timeout tear down at once,
+        // and test clips must stay exactly as long as requested.
+        if reason == StopReason::Completed && !session.info.is_test_clip {
+            thread::sleep(Duration::from_millis(STOP_GRACE_MS));
+        }
         drop(session.stream);
         let _ = session.control_tx.send(WorkerControl::Stop(reason));
         let result = session.worker.join().map_err(|_| {
@@ -1464,8 +1476,8 @@ mod tests {
     }
 
     const TEST_SAMPLE_RATE: u32 = 16_000;
-    /// 150 ms of padding at 16 kHz.
-    const PADDING_SAMPLES: usize = 2_400;
+    /// 300 ms of padding at 16 kHz.
+    const PADDING_SAMPLES: usize = 4_800;
 
     #[test]
     fn trims_leading_and_trailing_silence_keeping_padding() {
