@@ -8,7 +8,7 @@ use crate::{
     audio::{RecordingResult, RecordingResultStatus},
     commands::BackendState,
     error::CommandError,
-    model_manager,
+    model_manager, output,
     settings::Language,
     transcript::Transcript,
     whisper::{self, WhisperRequest},
@@ -110,9 +110,9 @@ fn transcribe_recording_inner(
     };
 
     let _ = app.emit("localdictate:dictation-transcribed", &result);
-    // Agent 6 output/paste should hook here, after the buffer/history save and before
-    // any ready-state timeout. The transcript metadata already preserves output mode
-    // and paste method, but this lane intentionally does not perform paste/copy.
+    if let Err(error) = output::handle_transcription_output(app, &transcript, &settings) {
+        output::emit_output_failed(app, transcript.id.clone(), &error);
+    }
     Ok(result)
 }
 

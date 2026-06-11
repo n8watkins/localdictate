@@ -6,11 +6,7 @@ use tauri::{
 };
 
 use crate::{
-    app_state::{AppEvent, AppStateSnapshot, AppStatus},
-    audio,
-    commands::BackendState,
-    dictation,
-    error::CommandError,
+    app_state::AppStatus, audio, commands::BackendState, dictation, error::CommandError, output,
 };
 
 const TRAY_ID: &str = "localdictate-main-tray";
@@ -139,20 +135,10 @@ pub fn stop_dictation(app: &AppHandle) -> Result<(), CommandError> {
 }
 
 pub fn paste_last_transcript(app: &AppHandle) -> Result<(), CommandError> {
+    output::paste_last_transcript(app)?;
     let state = app.state::<BackendState>();
-    let snapshot = state.app_state()?.snapshot();
-
-    if snapshot.status == AppStatus::Ready {
-        let snapshot = state.transition_app_state(AppEvent::StartPasting)?;
-        emit_state_snapshot(app, &snapshot);
-        update_tray_status(app, snapshot.status);
-
-        let snapshot = state.transition_app_state(AppEvent::PasteCompleted)?;
-        emit_state_snapshot(app, &snapshot);
-        update_tray_status(app, snapshot.status);
-    }
-
-    let _ = app.emit("localdictate:paste-placeholder", ());
+    let status = state.app_state()?.status().clone();
+    update_tray_status(app, status);
     Ok(())
 }
 
@@ -177,10 +163,6 @@ pub fn open_dashboard(app: &AppHandle, route: Option<&str>) -> Result<(), Comman
     );
 
     Ok(())
-}
-
-fn emit_state_snapshot(app: &AppHandle, snapshot: &AppStateSnapshot) {
-    let _ = app.emit("localdictate:app-state", snapshot);
 }
 
 fn update_tray_status(app: &AppHandle, status: AppStatus) {

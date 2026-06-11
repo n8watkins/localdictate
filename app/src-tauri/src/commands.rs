@@ -9,6 +9,7 @@ use crate::{
     hotkeys::{self, HotkeyStatus},
     model_manager::{self, DownloadRegistry},
     models::ModelInfo,
+    output::{self, OutputResult},
     settings::AppSettings,
     stats::BasicStats,
     transcript::Transcript,
@@ -222,6 +223,26 @@ pub fn transcribe_recording(
     recording: RecordingResult,
 ) -> Result<DictationResult, CommandError> {
     dictation::transcribe_recording_for_app(&app, recording)
+}
+
+#[tauri::command]
+pub fn paste_last_transcript(app: tauri::AppHandle) -> Result<OutputResult, CommandError> {
+    output::paste_last_transcript(&app)
+}
+
+#[tauri::command]
+pub fn copy_last_transcript(app: tauri::AppHandle) -> Result<OutputResult, CommandError> {
+    output::copy_last_transcript(&app)
+}
+
+#[tauri::command]
+pub fn paste_transcript(app: tauri::AppHandle, id: String) -> Result<OutputResult, CommandError> {
+    output::paste_transcript(&app, &id)
+}
+
+#[tauri::command]
+pub fn copy_transcript(app: tauri::AppHandle, id: String) -> Result<OutputResult, CommandError> {
+    output::copy_transcript(&app, &id)
 }
 
 #[tauri::command]

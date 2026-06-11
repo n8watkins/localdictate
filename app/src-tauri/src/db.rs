@@ -302,7 +302,7 @@ impl Database {
         Ok(())
     }
 
-    fn get_transcript_by_id(&self, id: &str) -> Result<Option<Transcript>, CommandError> {
+    pub fn get_transcript_by_id(&self, id: &str) -> Result<Option<Transcript>, CommandError> {
         self.conn
             .query_row(
                 "SELECT id, text, created_at, duration_ms, word_count, character_count,

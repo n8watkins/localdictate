@@ -73,6 +73,35 @@ export type Transcript = {
   transcriptionLatencyMs: number | null;
 };
 
+export type OutputAction =
+  | "save_only"
+  | "copy_clipboard"
+  | "paste"
+  | "copy_and_paste";
+
+export type OutputStatus = "completed" | "clipboard_restore_failed";
+
+export type ClipboardPreservation =
+  | "not_needed"
+  | "preserved"
+  | "text_only_preserved"
+  | "text_only_restore_failed"
+  | "clipboard_owned_by_mode";
+
+export type OutputResult = {
+  transcriptId: string;
+  action: OutputAction;
+  status: OutputStatus;
+  outputMode: OutputMode;
+  pasteMethod: PasteMethod | null;
+  copied: boolean;
+  pasted: boolean;
+  clipboardRestored: boolean | null;
+  clipboardPreservation: ClipboardPreservation;
+  clipboardRestoreError: string | null;
+  message: string;
+};
+
 export type BasicStats = {
   wordsToday: number;
   dictationsToday: number;
@@ -127,6 +156,22 @@ export function getLastTranscript(): Promise<Transcript | null> {
 
 export function clearLastTranscript(): Promise<void> {
   return invoke("clear_last_transcript");
+}
+
+export function pasteLastTranscript(): Promise<OutputResult> {
+  return invoke("paste_last_transcript");
+}
+
+export function copyLastTranscript(): Promise<OutputResult> {
+  return invoke("copy_last_transcript");
+}
+
+export function pasteTranscript(id: string): Promise<OutputResult> {
+  return invoke("paste_transcript", { id });
+}
+
+export function copyTranscript(id: string): Promise<OutputResult> {
+  return invoke("copy_transcript", { id });
 }
 
 export function listRecentTranscripts({

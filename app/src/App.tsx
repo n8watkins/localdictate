@@ -37,7 +37,9 @@ import {
 import {
   clearLastTranscript,
   commandErrorMessage,
+  copyLastTranscript,
   getDashboardData,
+  pasteLastTranscript,
   updateSettings,
   type AppSettings,
   type AppStateSnapshot,
@@ -45,6 +47,7 @@ import {
   type DashboardData,
   type HistoryRetentionDays,
   type OutputMode,
+  type OutputResult,
   type PasteMethod,
   type RecordingMode,
   type Transcript,
@@ -68,6 +71,10 @@ type SettingsPatch = Partial<AppSettings>;
 type ViewActions = {
   clearLastTranscript: () => Promise<void>;
   clearingLastTranscript: boolean;
+  copyLastTranscript: () => Promise<void>;
+  copyingLastTranscript: boolean;
+  pasteLastTranscript: () => Promise<void>;
+  pastingLastTranscript: boolean;
   refresh: () => Promise<void>;
   saveError: string | null;
   savingSettings: boolean;
@@ -179,6 +186,8 @@ function App() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [clearingLastTranscript, setClearingLastTranscript] = useState(false);
+  const [pastingLastTranscript, setPastingLastTranscript] = useState(false);
+  const [copyingLastTranscript, setCopyingLastTranscript] = useState(false);
   const heading = viewTitles[activeView];
 
   const refresh = useCallback(async () => {
@@ -245,9 +254,53 @@ function App() {
     }
   }, [refresh]);
 
+  const handleOutputResult = useCallback(
+    async (result: OutputResult) => {
+      await refresh();
+      if (result.clipboardRestoreError) {
+        setSaveError(result.clipboardRestoreError);
+      }
+    },
+    [refresh],
+  );
+
+  const handlePasteLastTranscript = useCallback(async () => {
+    setPastingLastTranscript(true);
+    setSaveError(null);
+
+    try {
+      const result = await pasteLastTranscript();
+      await handleOutputResult(result);
+    } catch (error) {
+      setSaveError(commandErrorMessage(error));
+      await refresh();
+    } finally {
+      setPastingLastTranscript(false);
+    }
+  }, [handleOutputResult, refresh]);
+
+  const handleCopyLastTranscript = useCallback(async () => {
+    setCopyingLastTranscript(true);
+    setSaveError(null);
+
+    try {
+      const result = await copyLastTranscript();
+      await handleOutputResult(result);
+    } catch (error) {
+      setSaveError(commandErrorMessage(error));
+      await refresh();
+    } finally {
+      setCopyingLastTranscript(false);
+    }
+  }, [handleOutputResult, refresh]);
+
   const actions: ViewActions = {
     clearLastTranscript: handleClearLastTranscript,
     clearingLastTranscript,
+    copyLastTranscript: handleCopyLastTranscript,
+    copyingLastTranscript,
+    pasteLastTranscript: handlePasteLastTranscript,
+    pastingLastTranscript,
     refresh,
     saveError,
     savingSettings,
@@ -424,7 +477,11 @@ function DashboardView({
       <section className="main-grid">
         <LastTranscriptCard
           clearing={actions.clearingLastTranscript}
+          copying={actions.copyingLastTranscript}
           onClear={actions.clearLastTranscript}
+          onCopy={actions.copyLastTranscript}
+          onPaste={actions.pasteLastTranscript}
+          pasting={actions.pastingLastTranscript}
           transcript={lastTranscript}
         />
 
@@ -530,7 +587,11 @@ function TranscribeView({
         <LastTranscriptCard
           clearing={actions.clearingLastTranscript}
           compact
+          copying={actions.copyingLastTranscript}
           onClear={actions.clearLastTranscript}
+          onCopy={actions.copyLastTranscript}
+          onPaste={actions.pasteLastTranscript}
+          pasting={actions.pastingLastTranscript}
           transcript={lastTranscript}
         />
       </div>
@@ -1215,15 +1276,24 @@ function AboutView() {
 function LastTranscriptCard({
   clearing,
   compact = false,
+  copying,
   onClear,
+  onCopy,
+  onPaste,
+  pasting,
   transcript,
 }: {
   clearing: boolean;
   compact?: boolean;
+  copying: boolean;
   onClear: () => Promise<void>;
+  onCopy: () => Promise<void>;
+  onPaste: () => Promise<void>;
+  pasting: boolean;
   transcript: Transcript | null;
 }) {
   const hasTranscript = Boolean(transcript);
+  const outputBusy = clearing || copying || pasting;
 
   return (
     <article className={compact ? "panel-card" : "buffer-card"}>
@@ -1258,21 +1328,31 @@ function LastTranscriptCard({
       )}
 
       <div className="button-row">
-        <button className="primary-button" disabled type="button">
+        <button
+          className="primary-button"
+          disabled={!hasTranscript || outputBusy}
+          onClick={() => void onPaste()}
+          type="button"
+        >
           <ClipboardPaste aria-hidden="true" size={16} />
-          Insert pending
+          {pasting ? "Inserting..." : "Insert"}
         </button>
         <button className="secondary-button" disabled type="button">
           <Pencil aria-hidden="true" size={15} />
           Edit pending
         </button>
-        <button className="secondary-button" disabled type="button">
+        <button
+          className="secondary-button"
+          disabled={!hasTranscript || outputBusy}
+          onClick={() => void onCopy()}
+          type="button"
+        >
           <Copy aria-hidden="true" size={15} />
-          Copy pending
+          {copying ? "Copying..." : "Copy"}
         </button>
         <button
           className="ghost-button"
-          disabled={!hasTranscript || clearing}
+          disabled={!hasTranscript || outputBusy}
           onClick={() => void onClear()}
           type="button"
         >

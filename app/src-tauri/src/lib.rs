@@ -7,6 +7,7 @@ pub mod error;
 pub mod hotkeys;
 pub mod model_manager;
 pub mod models;
+pub mod output;
 pub mod settings;
 pub mod stats;
 pub mod transcript;
@@ -58,6 +59,10 @@ pub fn run() {
             commands::cancel_recording,
             commands::record_test_clip,
             commands::transcribe_recording,
+            commands::paste_last_transcript,
+            commands::copy_last_transcript,
+            commands::paste_transcript,
+            commands::copy_transcript,
             commands::list_models,
             commands::download_model,
             commands::cancel_model_download,
