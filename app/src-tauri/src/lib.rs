@@ -5,6 +5,7 @@ pub mod db;
 pub mod dictation;
 pub mod error;
 pub mod hotkeys;
+pub mod incremental;
 pub mod model_manager;
 pub mod models;
 pub mod output;
@@ -52,6 +53,12 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_autostart::init(
+            // The macOS launcher choice is irrelevant boilerplate for this
+            // Windows app.
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let audio_temp_dir = app.path().app_cache_dir()?.join("recordings");
@@ -87,6 +94,33 @@ pub fn run() {
                 settings.selected_model_id
             );
             db.enforce_history_retention(settings.history_retention_days)?;
+            // Reconcile the OS launch-at-startup registration with the stored
+            // setting (they can drift when the registry entry is removed by
+            // hand or the setting was saved while registration failed).
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                match app.autolaunch().is_enabled() {
+                    Ok(enabled) if enabled != settings.launch_at_startup => {
+                        log::info!(
+                            "Reconciling launch-at-startup: OS registration {} but setting {}; applying the setting",
+                            enabled,
+                            settings.launch_at_startup
+                        );
+                        if let Err(error) =
+                            commands::apply_autostart(app.handle(), settings.launch_at_startup)
+                        {
+                            log::warn!(
+                                "Could not reconcile launch at startup. {}",
+                                error.message
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::warn!("Could not read launch-at-startup state. {}", error);
+                    }
+                }
+            }
             app.manage(BackendState::new(db, audio_temp_dir));
             app.manage(whisper_server::WarmTranscriber::new());
             hotkeys::setup(app.handle(), &settings.hotkeys)?;

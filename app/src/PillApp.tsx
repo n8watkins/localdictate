@@ -15,6 +15,7 @@ import {
   type AppSettings,
   type AppStateSnapshot,
   type AppStatus,
+  type PartialTranscriptEvent,
 } from "./backend";
 import "./pill.css";
 
@@ -30,6 +31,13 @@ const VISIBLE_STATUSES: ReadonlySet<AppStatus> = new Set([
 const READY_HIDE_DELAY_MS = 5000;
 const MOVE_PERSIST_DEBOUNCE_MS = 600;
 const BOTTOM_MARGIN_PX = 90;
+const PARTIAL_TAIL_CHARS = 60;
+
+function partialTail(text: string) {
+  return text.length > PARTIAL_TAIL_CHARS
+    ? `…${text.slice(-PARTIAL_TAIL_CHARS)}`
+    : text;
+}
 
 function pillTone(status: AppStatus) {
   switch (status) {
@@ -71,6 +79,7 @@ function PillApp() {
   const [appState, setAppState] = useState<AppStateSnapshot | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [partial, setPartial] = useState<PartialTranscriptEvent | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const positionedRef = useRef(false);
 
@@ -128,6 +137,39 @@ function PillApp() {
     };
   }, []);
 
+  // Track the live transcript for the active session.
+  useEffect(() => {
+    let disposed = false;
+    let unlisteners: Array<() => void> = [];
+
+    const setup = async () => {
+      unlisteners = await Promise.all([
+        listen<PartialTranscriptEvent>(
+          "localdictate:partial-transcript",
+          (event) => {
+            // The payload carries the full accumulated text for its session,
+            // so replacing wholesale also handles sessionId changes.
+            setPartial(event.payload);
+          },
+        ),
+        listen("audio://recording-started", () => {
+          setPartial(null);
+        }),
+      ]);
+
+      if (disposed) {
+        unlisteners.forEach((unlisten) => unlisten());
+      }
+    };
+
+    void setup();
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, []);
+
   // Persist the pill position after the user drags it.
   useEffect(() => {
     const pillWindow = getCurrentWindow();
@@ -182,6 +224,7 @@ function PillApp() {
     let hideTimer: number | null = null;
 
     if (!status || !showPill || !VISIBLE_STATUSES.has(status)) {
+      setPartial(null);
       void pillWindow.hide().catch(() => {});
       return;
     }
@@ -219,6 +262,7 @@ function PillApp() {
 
     if (status === "Ready") {
       hideTimer = window.setTimeout(() => {
+        setPartial(null);
         void pillWindow.hide().catch(() => {});
       }, READY_HIDE_DELAY_MS);
     }
@@ -251,6 +295,7 @@ function PillApp() {
 
   const [title, subtitle] = pillLines(appState);
   const isRecording = appState.status === "Recording";
+  const partialText = partial?.text.trim() ?? "";
 
   return (
     <div
@@ -260,7 +305,17 @@ function PillApp() {
       <span aria-hidden="true" className="pill-pulse" data-tauri-drag-region />
       <div className="pill-text" data-tauri-drag-region>
         <strong data-tauri-drag-region>{title}</strong>
-        {subtitle ? <span data-tauri-drag-region>{subtitle}</span> : null}
+        {partialText ? (
+          <span
+            className="pill-live"
+            data-tauri-drag-region
+            title={partialText}
+          >
+            {partialTail(partialText)}
+          </span>
+        ) : subtitle ? (
+          <span data-tauri-drag-region>{subtitle}</span>
+        ) : null}
       </div>
       {isRecording ? (
         <button

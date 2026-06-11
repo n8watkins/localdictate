@@ -51,6 +51,7 @@ export type AppSettings = {
   silenceTrimEnabled: boolean;
   silenceAutoStopEnabled: boolean;
   silenceAutoStopMs: number;
+  incrementalTranscriptionEnabled: boolean;
   selectedMicId: string | null;
   selectedModelId: string | null;
   language: Language;
@@ -219,6 +220,13 @@ export type AudioLevelEvent = {
 export type RecordingErrorEvent = {
   code: string;
   message: string;
+};
+
+export type PartialTranscriptEvent = {
+  sessionId: string;
+  text: string;
+  segments: number;
+  finalized: boolean;
 };
 
 export type DictationResult = {
@@ -497,6 +505,8 @@ function friendlyCommandErrorMessage(code: string): string | null {
       "The downloaded model failed verification. Delete it and retry the download.",
     model_download_in_progress:
       "That model is already downloading. Wait for it to finish or cancel it first.",
+    autostart_failed:
+      "Windows rejected the startup registration, so Launch at startup was not changed. Try again or check Windows startup settings.",
     hotkey_registration_failed:
       "Could not register the hotkey. Another app may be using it; choose a different shortcut.",
     paste_failed:

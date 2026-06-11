@@ -31,6 +31,11 @@ pub struct AppSettings {
     /// How long the audio must stay silent before auto-stop fires.
     #[serde(default = "default_silence_auto_stop_ms")]
     pub silence_auto_stop_ms: u32,
+    /// Transcribe finished phrases in the background while the user is still
+    /// talking, so stopping only has to transcribe the tail phrase. Applies
+    /// to dictation recordings only — never test clips.
+    #[serde(default = "default_incremental_transcription_enabled")]
+    pub incremental_transcription_enabled: bool,
     pub selected_mic_id: Option<String>,
     pub selected_model_id: Option<String>,
     pub language: Language,
@@ -58,6 +63,10 @@ fn default_silence_auto_stop_enabled() -> bool {
 
 fn default_silence_auto_stop_ms() -> u32 {
     2_000
+}
+
+fn default_incremental_transcription_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +160,7 @@ impl Default for AppSettings {
             silence_trim_enabled: true,
             silence_auto_stop_enabled: default_silence_auto_stop_enabled(),
             silence_auto_stop_ms: default_silence_auto_stop_ms(),
+            incremental_transcription_enabled: default_incremental_transcription_enabled(),
             selected_mic_id: None,
             selected_model_id: Some("small.en-q5_1".to_string()),
             language: Language::En,
@@ -254,6 +264,7 @@ mod tests {
         assert_eq!(settings.paste_method, PasteMethod::DirectInsert);
         assert!(settings.silence_auto_stop_enabled);
         assert_eq!(settings.silence_auto_stop_ms, 2_000);
+        assert!(settings.incremental_transcription_enabled);
         assert_eq!(settings.vocabulary_prompt, "");
         assert!(settings.history_enabled);
         assert!(!settings.save_audio_clips);
@@ -359,6 +370,7 @@ mod tests {
         assert_eq!(settings.defaults_version, 0);
         assert!(settings.silence_auto_stop_enabled);
         assert_eq!(settings.silence_auto_stop_ms, 2_000);
+        assert!(settings.incremental_transcription_enabled);
         assert_eq!(settings.vocabulary_prompt, "");
         assert_eq!(settings.output_mode, OutputMode::SaveOnly);
     }

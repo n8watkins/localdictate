@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -8,10 +8,11 @@ use crate::{
     audio::{RecordingResult, RecordingResultStatus},
     commands::BackendState,
     error::CommandError,
+    incremental::{self, SessionHandle},
     model_manager, output,
     settings::Language,
     transcript::Transcript,
-    whisper::WhisperRequest,
+    whisper::{WhisperRequest, WhisperTranscription},
     whisper_server::WarmTranscriber,
 };
 
@@ -36,6 +37,15 @@ pub fn transcribe_recording_for_app(
     app: &AppHandle,
     recording: RecordingResult,
 ) -> Result<DictationResult, CommandError> {
+    // Take ownership of the incremental session (if any) up front so it is
+    // consumed exactly once, whatever happens below. `stopped` anchors the
+    // stop-to-final-text latency measurement.
+    let stopped = Instant::now();
+    let incremental = app
+        .state::<BackendState>()
+        .incremental()
+        .take(&recording.session_id);
+
     validate_recording_result(&recording)?;
     let wav_path = PathBuf::from(recording.wav_path.as_deref().ok_or_else(|| {
         CommandError::new(
@@ -45,7 +55,7 @@ pub fn transcribe_recording_for_app(
     })?);
     let cleanup = WavCleanup::new(wav_path.clone());
 
-    let result = transcribe_recording_inner(app, &recording, wav_path);
+    let result = transcribe_recording_inner(app, &recording, wav_path, incremental, stopped);
     cleanup.remove();
     result
 }
@@ -54,6 +64,8 @@ fn transcribe_recording_inner(
     app: &AppHandle,
     recording: &RecordingResult,
     wav_path: PathBuf,
+    incremental: Option<SessionHandle>,
+    stopped: Instant,
 ) -> Result<DictationResult, CommandError> {
     let state = app.state::<BackendState>();
     let settings = state.db()?.get_settings()?;
@@ -62,23 +74,31 @@ fn transcribe_recording_inner(
         model_manager::selected_model_path(app, &db)?
     };
     let language = whisper_language(&settings.language);
-    log::info!(
-        "Transcription started for session {} (model {}, recording {} ms)",
-        recording.session_id,
-        model_id,
-        recording.duration_ms
-    );
-    // The warm whisper-server transcriber falls back to whisper-cli
-    // internally when the server path is unavailable.
-    let whisper_result = app.state::<WarmTranscriber>().transcribe(
-        app,
-        WhisperRequest {
-            model_path,
-            wav_path,
-            language: language.clone(),
-            vocabulary_prompt: settings.vocabulary_prompt.clone(),
-        },
-    );
+
+    let whisper_result = match incremental
+        .and_then(|handle| collect_incremental_transcription(app, recording, handle, stopped))
+    {
+        Some(assembled) => Ok(assembled),
+        None => {
+            log::info!(
+                "Transcription started for session {} (model {}, recording {} ms)",
+                recording.session_id,
+                model_id,
+                recording.duration_ms
+            );
+            // The warm whisper-server transcriber falls back to whisper-cli
+            // internally when the server path is unavailable.
+            app.state::<WarmTranscriber>().transcribe(
+                app,
+                WhisperRequest {
+                    model_path,
+                    wav_path,
+                    language: language.clone(),
+                    vocabulary_prompt: settings.vocabulary_prompt.clone(),
+                },
+            )
+        }
+    };
 
     let whisper_result = match whisper_result {
         Ok(result) => result,
@@ -139,6 +159,62 @@ fn transcribe_recording_inner(
     Ok(result)
 }
 
+/// Waits (bounded) for the incremental coordinator's assembled text and turns
+/// it into the dictation transcription, with the latency measured from stop.
+/// Returns None whenever the full-clip transcription path should run instead;
+/// by the time None is returned the coordinator has definitively finished,
+/// failed, or been cancelled, so the fallback never races a segment job for
+/// the WarmTranscriber (which is serialized internally anyway).
+fn collect_incremental_transcription(
+    app: &AppHandle,
+    recording: &RecordingResult,
+    handle: SessionHandle,
+    stopped: Instant,
+) -> Option<WhisperTranscription> {
+    match handle.wait(incremental::RESULT_TIMEOUT) {
+        Ok(assembled) if !assembled.text.is_empty() => {
+            let latency_ms = stopped.elapsed().as_millis().min(u32::MAX as u128) as u32;
+            log::info!(
+                "Incremental transcription assembled {} segment(s) for session {} ({} ms stop-to-text)",
+                assembled.segments,
+                recording.session_id,
+                latency_ms
+            );
+            incremental::emit_partial_transcript(
+                app,
+                &recording.session_id,
+                &assembled.text,
+                assembled.segments,
+                true,
+            );
+            Some(WhisperTranscription {
+                text: assembled.text,
+                latency_ms,
+            })
+        }
+        Ok(_) => {
+            // Zero segments produced any text (e.g. speech never crossed the
+            // segmenter threshold): let the full clip decide.
+            log::warn!(
+                "Incremental transcription produced no text for session {}; falling back to full-clip transcription",
+                recording.session_id
+            );
+            None
+        }
+        Err(reason) => {
+            log::warn!(
+                "Incremental transcription unavailable for session {} ({}); falling back to full-clip transcription",
+                recording.session_id,
+                reason
+            );
+            // On timeout the coordinator may still be working: tell it to
+            // discard everything before the fallback transcription starts.
+            handle.cancel();
+            None
+        }
+    }
+}
+
 fn validate_recording_result(recording: &RecordingResult) -> Result<(), CommandError> {
     if !matches!(
         recording.status,
@@ -166,7 +242,7 @@ fn validate_recording_result(recording: &RecordingResult) -> Result<(), CommandE
     Ok(())
 }
 
-fn whisper_language(language: &Language) -> String {
+pub(crate) fn whisper_language(language: &Language) -> String {
     match language {
         Language::Auto | Language::En => "en".to_string(),
     }

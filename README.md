@@ -7,6 +7,7 @@ Private, local-first dictation for Windows. Hold a hotkey, talk, release — you
 - **Paste last transcript:** `Ctrl+Alt+V` re-inserts your most recent dictation anywhere.
 - **Floating pill:** a small always-on-top status pill shows recording/transcribing state even while the app is hidden in the tray. Drag it anywhere; it remembers its spot. Click it to stop recording.
 - **History & stats:** searchable transcript history with retention controls, kept in a local SQLite database.
+- **Live transcription:** phrases are transcribed in the background while you're still talking, so text is ready the moment you stop — watch it accumulate on the pill.
 - **All hotkeys rebindable** from the Hotkeys tab.
 
 Windows 10/11 x64 only, by design. There are no plans to over-build this for other platforms.
@@ -73,9 +74,8 @@ Design and architecture docs live in [`docs/`](docs/), including the [PRD](docs/
 ## Roadmap / known gaps
 
 - No code signing yet (SmartScreen warning on install).
-- Incremental transcription (text appearing while you talk) is planned; the warm transcription service was built segment-first to support it.
+- No auto-updates yet; grab new versions from Releases.
 - Transcript search uses SQL `LIKE`; fine for thousands of entries, not millions.
-- Launch-at-startup setting is not yet wired to the OS.
 
 Contributions and issue reports are welcome.
 

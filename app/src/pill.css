@@ -67,6 +67,10 @@ body,
   font-size: 11px;
 }
 
+.pill-text span.pill-live {
+  color: #e2e8f0;
+}
+
 .pill-pulse {
   width: 9px;
   height: 9px;

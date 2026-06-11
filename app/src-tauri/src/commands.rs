@@ -23,6 +23,7 @@ pub struct BackendState {
     audio: Mutex<audio::AudioService>,
     db: Mutex<Database>,
     model_downloads: DownloadRegistry,
+    incremental: crate::incremental::Registry,
 }
 
 impl BackendState {
@@ -32,6 +33,7 @@ impl BackendState {
             audio: Mutex::new(audio::AudioService::new(audio_temp_dir)),
             db: Mutex::new(db),
             model_downloads: DownloadRegistry::default(),
+            incremental: crate::incremental::Registry::default(),
         }
     }
 
@@ -55,6 +57,12 @@ impl BackendState {
 
     pub fn model_downloads(&self) -> &DownloadRegistry {
         &self.model_downloads
+    }
+
+    /// Active incremental transcription sessions, keyed by recording session
+    /// id.
+    pub fn incremental(&self) -> &crate::incremental::Registry {
+        &self.incremental
     }
 
     pub fn transition_app_state(&self, event: AppEvent) -> Result<AppStateSnapshot, CommandError> {
@@ -88,6 +96,12 @@ pub fn update_settings(
 
     let previous = state.db()?.get_settings()?;
 
+    // Apply launch-at-startup first: when the OS registration fails the new
+    // value is never saved, so the UI toggle reverts.
+    if previous.launch_at_startup != settings.launch_at_startup {
+        apply_autostart(&app, settings.launch_at_startup)?;
+    }
+
     let mut hotkey_failures = Vec::new();
     if previous.hotkeys != settings.hotkeys {
         hotkey_failures = hotkeys::replace_hotkeys(&app, &previous.hotkeys, &settings.hotkeys)?;
@@ -96,6 +110,9 @@ pub fn update_settings(
     if let Err(error) = state.db()?.save_settings(&settings) {
         if previous.hotkeys != settings.hotkeys {
             let _ = hotkeys::replace_hotkeys(&app, &settings.hotkeys, &previous.hotkeys);
+        }
+        if previous.launch_at_startup != settings.launch_at_startup {
+            let _ = apply_autostart(&app, previous.launch_at_startup);
         }
 
         return Err(error);
@@ -112,6 +129,30 @@ pub fn update_settings(
     }
 
     Ok(settings)
+}
+
+/// Enables or disables the OS launch-at-startup registration. Shared by the
+/// settings command and the setup-time reconciliation in `lib.rs`.
+pub(crate) fn apply_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), CommandError> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let autolaunch = app.autolaunch();
+    let result = if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    };
+
+    result.map_err(|error| {
+        CommandError::new(
+            "autostart_failed",
+            format!(
+                "Could not {} launch at startup. {}",
+                if enabled { "enable" } else { "disable" },
+                error
+            ),
+        )
+    })
 }
 
 #[tauri::command]

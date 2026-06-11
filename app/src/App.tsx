@@ -79,6 +79,7 @@ import {
   type ModelInfo,
   type OutputMode,
   type OutputResult,
+  type PartialTranscriptEvent,
   type PasteMethod,
   type RecordingResult,
   type RecordingSessionInfo,
@@ -211,6 +212,8 @@ function App() {
   const [microphones, setMicrophones] = useState<MicrophoneInfo[] | null>(null);
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [toast, setToast] = useState<ToastNotice | null>(null);
+  const [liveTranscript, setLiveTranscript] =
+    useState<PartialTranscriptEvent | null>(null);
   const soundsEnabledRef = useRef(false);
   const heading = viewTitles[activeView];
 
@@ -289,14 +292,26 @@ function App() {
           setDashboardData((current) =>
             current ? { ...current, appState: event.payload } : current,
           );
+          if (event.payload.status === "Idle") {
+            setLiveTranscript(null);
+          }
           scheduleRefresh();
         }),
         listen<RecordingSessionInfo>("audio://recording-started", (event) => {
+          setLiveTranscript(null);
           if (soundsEnabledRef.current) {
             playStartCue();
           }
           showNotice(`Recording with ${event.payload.microphoneName}.`);
         }),
+        listen<PartialTranscriptEvent>(
+          "localdictate:partial-transcript",
+          (event) => {
+            // The finalized event hands off to the dictation-transcribed
+            // flow, which refreshes the Last Transcript Buffer.
+            setLiveTranscript(event.payload.finalized ? null : event.payload);
+          },
+        ),
         listen<RecordingResult>("audio://recording-stopped", (event) => {
           if (soundsEnabledRef.current) {
             playStopCue();
@@ -642,6 +657,7 @@ function App() {
               actions,
               microphones,
               models,
+              liveTranscript,
             )
           : null}
         {toast ? <Toast notice={toast} /> : null}
@@ -657,10 +673,17 @@ function renderView(
   actions: ViewActions,
   microphones: MicrophoneInfo[] | null,
   models: ModelInfo[] | null,
+  liveTranscript: PartialTranscriptEvent | null,
 ) {
   switch (activeView) {
     case "Transcribe":
-      return <TranscribeView actions={actions} data={data} />;
+      return (
+        <TranscribeView
+          actions={actions}
+          data={data}
+          liveTranscript={liveTranscript}
+        />
+      );
     case "History":
       return <HistoryView actions={actions} data={data} />;
     case "Stats":
@@ -802,11 +825,19 @@ function DashboardView({
 function TranscribeView({
   actions,
   data,
+  liveTranscript,
 }: {
   actions: ViewActions;
   data: DashboardData;
+  liveTranscript: PartialTranscriptEvent | null;
 }) {
   const { appState, lastTranscript, settings } = data;
+  const liveText = liveTranscript?.text.trim() ?? "";
+  const showLiveTranscript =
+    liveText.length > 0 &&
+    (appState.status === "Recording" ||
+      appState.status === "Stopping" ||
+      appState.status === "Transcribing");
 
   return (
     <section className="split-grid">
@@ -827,6 +858,7 @@ function TranscribeView({
               Hold {formatHotkey(settings.hotkeys.holdToTalk)} or use toggle
               mode. Audio is transcribed locally.
             </p>
+            {showLiveTranscript ? <LiveTranscript text={liveText} /> : null}
           </div>
         </div>
 
@@ -2388,6 +2420,19 @@ function AudioView({
             </select>
           </SettingRow>
           <SettingRow
+            description="Transcribe phrases in the background while you talk so text is ready the moment you stop."
+            label="Live transcription"
+          >
+            <Toggle
+              checked={settings.incrementalTranscriptionEnabled}
+              disabled={actions.savingSettings}
+              label="Live transcription"
+              onChange={(incrementalTranscriptionEnabled) =>
+                actions.updateSettings({ incrementalTranscriptionEnabled })
+              }
+            />
+          </SettingRow>
+          <SettingRow
             description="Ignore captures below this length."
             label="Minimum duration"
           >
@@ -2998,6 +3043,27 @@ function EmptyState({ message }: { message: string }) {
     <div className="empty-state">
       <Info aria-hidden="true" size={16} />
       <span>{message}</span>
+    </div>
+  );
+}
+
+function LiveTranscript({ text }: { text: string }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest words visible as the transcript grows.
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (node) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [text]);
+
+  return (
+    <div className="live-transcript">
+      <span aria-hidden="true" className="live-transcript-dot" />
+      <div aria-live="polite" className="live-transcript-text" ref={scrollRef}>
+        {text}
+      </div>
     </div>
   );
 }

@@ -39,15 +39,14 @@ const TARGET_BITS_PER_SAMPLE: u16 = 16;
 #[cfg(windows)]
 const LEVEL_EVENT_INTERVAL: Duration = Duration::from_millis(40);
 const DEFAULT_TEST_CLIP_MS: u64 = 3_000;
-/// Per-chunk RMS at or above this counts as speech. Silence auto-stop only
-/// arms after at least one speech chunk, so a recording that never picks up
-/// any voice is not cut short.
-#[cfg(windows)]
-const AUTO_STOP_SPEECH_RMS: f32 = 0.03;
-/// RMS below this counts as silence, both for the auto-stop countdown and
-/// for trimming leading/trailing silence. Sits below typical speech levels
-/// but above quiet room noise.
-const SILENCE_RMS_THRESHOLD: f32 = 0.015;
+/// Per-chunk RMS at or above this counts as speech. Silence auto-stop and the
+/// incremental segmenter only arm after at least one speech chunk, so a
+/// recording that never picks up any voice is not cut short or segmented.
+pub(crate) const AUTO_STOP_SPEECH_RMS: f32 = 0.03;
+/// RMS below this counts as silence, for the auto-stop countdown, the
+/// incremental segmenter, and trimming leading/trailing silence. Sits below
+/// typical speech levels but above quiet room noise.
+pub(crate) const SILENCE_RMS_THRESHOLD: f32 = 0.015;
 /// Audio kept on each side of detected speech when trimming silence, so word
 /// onsets/tails are not clipped.
 const TRIM_PADDING_MS: u32 = 150;
@@ -278,6 +277,19 @@ impl AudioService {
         let auto_stop_after_ms =
             (allow_auto_stop && !is_test_clip && settings.silence_auto_stop_enabled)
                 .then_some(settings.silence_auto_stop_ms as u64);
+        // Incremental transcription applies to dictation recordings only —
+        // never test clips — and only when the setting is enabled. When the
+        // coordinator cannot start this is None and behavior is unchanged.
+        let incremental = if !is_test_clip && settings.incremental_transcription_enabled {
+            crate::incremental::start_session(
+                app,
+                &session_id,
+                self.temp_dir.clone(),
+                source_sample_rate,
+            )
+        } else {
+            None
+        };
         let worker_info = info.clone();
         let worker = thread::spawn(move || {
             recording_worker(
@@ -290,6 +302,7 @@ impl AudioService {
                 min_recording_ms,
                 silence_trim_enabled,
                 auto_stop_after_ms,
+                incremental,
             )
         });
 
@@ -488,6 +501,8 @@ pub fn cancel_recording_for_app(app: &AppHandle) -> Result<(), CommandError> {
             result.session_id,
             result.duration_ms
         );
+        // No transcription will follow: drop any incremental session.
+        state.incremental().discard(&result.session_id);
         let _ = app.emit("audio://recording-stopped", &result);
     }
 
@@ -603,6 +618,13 @@ fn stop_recording_with_reason(
         result.status,
         result.duration_ms
     );
+    if !matches!(
+        result.status,
+        RecordingResultStatus::Completed | RecordingResultStatus::TimedOut
+    ) {
+        // No transcription will follow: drop any incremental session.
+        state.incremental().discard(&result.session_id);
+    }
     let _ = app.emit("audio://recording-stopped", &result);
 
     let snapshot = state.app_state()?.snapshot();
@@ -656,6 +678,7 @@ fn spawn_timeout_thread(
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn recording_worker(
     app: AppHandle,
     info: RecordingSessionInfo,
@@ -666,6 +689,7 @@ fn recording_worker(
     min_recording_ms: u64,
     silence_trim_enabled: bool,
     auto_stop_after_ms: Option<u64>,
+    mut incremental: Option<crate::incremental::WorkerLink>,
 ) -> Result<RecordingResult, CommandError> {
     let mut samples = Vec::<f32>::new();
     let mut last_level_emit = Instant::now()
@@ -685,6 +709,9 @@ fn recording_worker(
                     Ok(chunk) => {
                         maybe_emit_level(&app, &info.session_id, &chunk.samples, &mut last_level_emit);
                         auto_stop.observe(&app, &info.session_id, &chunk.samples);
+                        if let Some(link) = incremental.as_mut() {
+                            link.push_chunk(&chunk.samples);
+                        }
                         samples.extend(chunk.samples);
                     }
                     Err(_) => break StopReason::Completed,
@@ -695,7 +722,22 @@ fn recording_worker(
 
     while let Ok(chunk) = chunk_rx.try_recv() {
         maybe_emit_level(&app, &info.session_id, &chunk.samples, &mut last_level_emit);
+        if let Some(link) = incremental.as_mut() {
+            link.push_chunk(&chunk.samples);
+        }
         samples.extend(chunk.samples);
+    }
+
+    if let Some(link) = incremental.take() {
+        let transcribable = stop_reason != StopReason::Cancelled
+            && duration_ms(samples.len(), source_sample_rate) >= min_recording_ms;
+        if transcribable {
+            // Flush the tail phrase and let the coordinator assemble the
+            // final text while the full WAV is written below.
+            link.finish();
+        } else {
+            link.cancel();
+        }
     }
 
     finalize_recording(
@@ -808,8 +850,9 @@ impl SilenceAutoStop {
 }
 
 /// Root-mean-square level of one chunk of mono samples; 0.0 for an empty
-/// chunk. Shared by the level meter, silence auto-stop, and silence trimming.
-fn chunk_rms(samples: &[f32]) -> f32 {
+/// chunk. Shared by the level meter, silence auto-stop, the incremental
+/// segmenter, and silence trimming.
+pub(crate) fn chunk_rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
@@ -1213,7 +1256,10 @@ fn trim_silence(samples: Vec<f32>, sample_rate: u32, enabled: bool) -> Vec<f32> 
     samples[start..end].to_vec()
 }
 
-fn normalize_to_whisper_wav_samples(samples: &[f32], source_sample_rate: u32) -> Vec<f32> {
+pub(crate) fn normalize_to_whisper_wav_samples(
+    samples: &[f32],
+    source_sample_rate: u32,
+) -> Vec<f32> {
     let resampled = resample_to_target_rate(samples, source_sample_rate, TARGET_SAMPLE_RATE);
     resampled
         .into_iter()
@@ -1305,7 +1351,7 @@ fn resample_linear(samples: &[f32], source_sample_rate: u32, target_sample_rate:
     output
 }
 
-fn write_wav(path: &PathBuf, samples: &[f32]) -> Result<(), CommandError> {
+pub(crate) fn write_wav(path: &PathBuf, samples: &[f32]) -> Result<(), CommandError> {
     let spec = hound::WavSpec {
         channels: TARGET_CHANNELS,
         sample_rate: TARGET_SAMPLE_RATE,
@@ -1337,7 +1383,7 @@ fn write_wav(path: &PathBuf, samples: &[f32]) -> Result<(), CommandError> {
     })
 }
 
-fn duration_ms(sample_count: usize, sample_rate: u32) -> u64 {
+pub(crate) fn duration_ms(sample_count: usize, sample_rate: u32) -> u64 {
     if sample_rate == 0 {
         return 0;
     }

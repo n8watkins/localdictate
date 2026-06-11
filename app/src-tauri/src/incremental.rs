@@ -1,0 +1,680 @@
+//! Incremental transcription: while the user is still talking, finished
+//! phrases are cut at natural pauses, written out as 16 kHz WAV segments, and
+//! transcribed in the background through the shared [`WarmTranscriber`]. On
+//! stop only the tail phrase remains to transcribe, so stop-to-text latency
+//! stays near-instant regardless of recording length.
+//!
+//! Architecture per recording session:
+//! - The recording worker owns a [`WorkerLink`] (segmenter + sender). It cuts
+//!   segments and hands their WAV paths to the coordinator in order.
+//! - A coordinator thread receives segment paths, transcribes each one,
+//!   accumulates the texts in order, and emits
+//!   `localdictate:partial-transcript` events as it goes.
+//! - The dictation stop path looks the session up in the [`Registry`] and
+//!   waits (bounded) for the assembled text. Any failure anywhere degrades
+//!   gracefully to the existing full-clip transcription path.
+
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::Duration,
+};
+
+use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::{
+    audio::{self, AUTO_STOP_SPEECH_RMS, SILENCE_RMS_THRESHOLD},
+    commands::BackendState,
+    model_manager,
+    whisper::WhisperRequest,
+    whisper_server::WarmTranscriber,
+};
+
+/// Trailing continuous silence that finalizes an in-progress segment. Long
+/// enough to be a natural phrase pause, short enough that the tail left at
+/// stop time stays small.
+const SEGMENT_SILENCE_MS: u64 = 500;
+/// Hard cap on segment length, comfortably inside Whisper's 30 s window.
+const SEGMENT_MAX_MS: u64 = 25_000;
+/// How much accumulated transcript text is appended to the vocabulary prompt
+/// for cross-segment continuity.
+const PROMPT_CONTEXT_CHARS: usize = 200;
+/// How long the dictation stop path waits for the coordinator's assembled
+/// text before falling back to full-clip transcription.
+pub const RESULT_TIMEOUT: Duration = Duration::from_secs(15);
+
+const PARTIAL_TRANSCRIPT_EVENT: &str = "localdictate:partial-transcript";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialTranscriptEvent {
+    session_id: String,
+    text: String,
+    segments: u32,
+    finalized: bool,
+}
+
+/// Emits a `localdictate:partial-transcript` event. The dictation stop path
+/// uses this for the final `finalized: true` event; the coordinator emits the
+/// in-progress ones.
+pub fn emit_partial_transcript(
+    app: &AppHandle,
+    session_id: &str,
+    text: &str,
+    segments: u32,
+    finalized: bool,
+) {
+    let _ = app.emit(
+        PARTIAL_TRANSCRIPT_EVENT,
+        PartialTranscriptEvent {
+            session_id: session_id.to_string(),
+            text: text.to_string(),
+            segments,
+            finalized,
+        },
+    );
+}
+
+/// Cuts a stream of audio chunks into transcribable segments. A segment is
+/// finalized once it contains speech (any chunk RMS at or above
+/// [`AUTO_STOP_SPEECH_RMS`]) and ends in [`SEGMENT_SILENCE_MS`] of continuous
+/// silence, or once it reaches [`SEGMENT_MAX_MS`]. Silence-only audio between
+/// segments is never accumulated.
+struct Segmenter {
+    sample_rate: u32,
+    samples: Vec<f32>,
+    speech_detected: bool,
+    trailing_silence_samples: usize,
+}
+
+impl Segmenter {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            samples: Vec::new(),
+            speech_detected: false,
+            trailing_silence_samples: 0,
+        }
+    }
+
+    /// Feeds one chunk of mono samples at the source rate. Returns the
+    /// finalized segment's samples when this chunk completed one.
+    fn push_chunk(&mut self, chunk: &[f32]) -> Option<Vec<f32>> {
+        if chunk.is_empty() || self.sample_rate == 0 {
+            return None;
+        }
+
+        let rms = audio::chunk_rms(chunk);
+        // Silence between segments never starts a new segment.
+        if self.samples.is_empty() && rms < SILENCE_RMS_THRESHOLD {
+            return None;
+        }
+
+        self.samples.extend_from_slice(chunk);
+        if rms >= AUTO_STOP_SPEECH_RMS {
+            self.speech_detected = true;
+            self.trailing_silence_samples = 0;
+        } else if rms >= SILENCE_RMS_THRESHOLD {
+            // Not speech, but not silent either: the silence run is broken.
+            self.trailing_silence_samples = 0;
+        } else {
+            self.trailing_silence_samples += chunk.len();
+        }
+
+        if self.speech_detected
+            && audio::duration_ms(self.trailing_silence_samples, self.sample_rate)
+                >= SEGMENT_SILENCE_MS
+        {
+            return Some(self.take_segment());
+        }
+
+        if audio::duration_ms(self.samples.len(), self.sample_rate) >= SEGMENT_MAX_MS {
+            if self.speech_detected {
+                return Some(self.take_segment());
+            }
+            // Speech never showed up: keep only a short tail so the buffer
+            // stays bounded. Everything dropped is below the speech
+            // threshold; the full recording still captures it.
+            let keep = ((self.sample_rate as u64 * SEGMENT_SILENCE_MS) / 1_000) as usize;
+            let drop = self.samples.len().saturating_sub(keep);
+            self.samples.drain(..drop);
+            self.trailing_silence_samples = self.trailing_silence_samples.min(self.samples.len());
+        }
+
+        None
+    }
+
+    /// Final flush at stop: whatever is left, with no trailing-silence
+    /// requirement — but only when it actually contains speech.
+    fn take_tail(&mut self) -> Option<Vec<f32>> {
+        if self.speech_detected {
+            Some(self.take_segment())
+        } else {
+            self.samples.clear();
+            self.trailing_silence_samples = 0;
+            None
+        }
+    }
+
+    fn take_segment(&mut self) -> Vec<f32> {
+        self.speech_detected = false;
+        self.trailing_silence_samples = 0;
+        std::mem::take(&mut self.samples)
+    }
+}
+
+/// Joins per-segment transcripts with single spaces, dropping empty ones.
+fn join_segments(texts: &[String]) -> String {
+    texts
+        .iter()
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Per-segment prompt: the vocabulary prompt plus the last
+/// [`PROMPT_CONTEXT_CHARS`] characters of the accumulated transcript, for
+/// cross-segment continuity.
+fn prompt_with_context(vocabulary_prompt: &str, accumulated: &str) -> String {
+    let vocabulary = vocabulary_prompt.trim();
+    let context = text_tail(accumulated.trim(), PROMPT_CONTEXT_CHARS);
+
+    match (vocabulary.is_empty(), context.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => vocabulary.to_string(),
+        (true, false) => context.to_string(),
+        (false, false) => format!("{} {}", vocabulary, context),
+    }
+}
+
+/// Last `max_chars` characters of `text`, on a char boundary.
+fn text_tail(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+
+    match text.char_indices().rev().nth(max_chars - 1) {
+        Some((index, _)) => &text[index..],
+        None => text,
+    }
+}
+
+#[derive(Debug)]
+enum Msg {
+    /// An ordered, finished segment WAV (16 kHz mono PCM16) to transcribe.
+    Segment(PathBuf),
+    /// The worker could not produce a segment; the session must fall back.
+    Fail,
+    /// End of stream: all segments (including the tail) have been sent.
+    Finish,
+    /// Discard all pending work and exit.
+    Cancel,
+}
+
+/// The coordinator's assembled output for one session.
+#[derive(Debug, Clone)]
+pub struct AssembledTranscript {
+    pub text: String,
+    pub segments: u32,
+}
+
+/// Handle the dictation stop path uses to collect (or cancel) a session.
+pub struct SessionHandle {
+    msg_tx: Sender<Msg>,
+    result_rx: Receiver<Result<AssembledTranscript, ()>>,
+}
+
+impl SessionHandle {
+    /// Waits for the coordinator's assembled transcript. Errors describe why
+    /// the caller should fall back to full-clip transcription.
+    pub fn wait(&self, timeout: Duration) -> Result<AssembledTranscript, String> {
+        match self.result_rx.recv_timeout(timeout) {
+            Ok(Ok(assembled)) => Ok(assembled),
+            Ok(Err(())) => Err("a segment transcription failed".to_string()),
+            Err(RecvTimeoutError::Timeout) => {
+                Err(format!("timed out after {} s", timeout.as_secs()))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                Err("the coordinator exited without a result".to_string())
+            }
+        }
+    }
+
+    /// Tells the coordinator to discard all pending work. Safe to call after
+    /// the coordinator has already exited.
+    pub fn cancel(&self) {
+        let _ = self.msg_tx.send(Msg::Cancel);
+    }
+}
+
+/// Maps active session ids to their coordinator handles so the dictation stop
+/// path (which only sees a serialized `RecordingResult`) can find them.
+#[derive(Default)]
+pub struct Registry {
+    sessions: Mutex<HashMap<String, SessionHandle>>,
+}
+
+impl Registry {
+    fn register(&self, session_id: String, handle: SessionHandle) {
+        self.lock().insert(session_id, handle);
+    }
+
+    /// Removes and returns the session's handle. Each session is consumed at
+    /// most once.
+    pub fn take(&self, session_id: &str) -> Option<SessionHandle> {
+        self.lock().remove(session_id)
+    }
+
+    /// Removes the session and cancels any pending coordinator work. Used
+    /// when a recording ends without transcription (cancelled / too short).
+    pub fn discard(&self, session_id: &str) {
+        if let Some(handle) = self.take(session_id) {
+            handle.cancel();
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionHandle>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The recording worker's side of a session: segments the live audio and
+/// hands finished segment WAVs to the coordinator.
+pub struct WorkerLink {
+    session_id: String,
+    temp_dir: PathBuf,
+    msg_tx: Sender<Msg>,
+    segmenter: Segmenter,
+    next_segment: u32,
+    failed: bool,
+}
+
+impl WorkerLink {
+    /// Feeds one chunk of mono samples at the source rate.
+    pub fn push_chunk(&mut self, chunk: &[f32]) {
+        if self.failed {
+            return;
+        }
+        if let Some(segment) = self.segmenter.push_chunk(chunk) {
+            self.send_segment(segment);
+        }
+    }
+
+    /// Flushes the tail segment (if it contains speech) and signals
+    /// end-of-stream so the coordinator assembles its result.
+    pub fn finish(mut self) {
+        if !self.failed {
+            if let Some(tail) = self.segmenter.take_tail() {
+                self.send_segment(tail);
+            }
+        }
+        let _ = self.msg_tx.send(Msg::Finish);
+    }
+
+    /// Discards the session (recording cancelled or too short).
+    pub fn cancel(self) {
+        let _ = self.msg_tx.send(Msg::Cancel);
+    }
+
+    fn send_segment(&mut self, samples: Vec<f32>) {
+        let normalized =
+            audio::normalize_to_whisper_wav_samples(&samples, self.segmenter.sample_rate);
+        let path = self.temp_dir.join(format!(
+            "{}-segment-{}.wav",
+            self.session_id, self.next_segment
+        ));
+        self.next_segment += 1;
+
+        match audio::write_wav(&path, &normalized) {
+            Ok(()) => {
+                let _ = self.msg_tx.send(Msg::Segment(path));
+            }
+            Err(error) => {
+                log::warn!(
+                    "Could not write incremental segment WAV for session {}; falling back to full-clip transcription. {}",
+                    self.session_id,
+                    error.message
+                );
+                self.failed = true;
+                let _ = self.msg_tx.send(Msg::Fail);
+            }
+        }
+    }
+}
+
+/// Starts the per-session coordinator thread and registers its handle.
+/// Returns the worker's link, or None when the coordinator could not start
+/// (the caller then behaves exactly as if incremental were disabled).
+pub fn start_session(
+    app: &AppHandle,
+    session_id: &str,
+    temp_dir: PathBuf,
+    source_sample_rate: u32,
+) -> Option<WorkerLink> {
+    let (msg_tx, msg_rx) = unbounded::<Msg>();
+    let (result_tx, result_rx) = bounded::<Result<AssembledTranscript, ()>>(1);
+
+    let registry_state = app.state::<BackendState>();
+    registry_state.incremental().register(
+        session_id.to_string(),
+        SessionHandle {
+            msg_tx: msg_tx.clone(),
+            result_rx,
+        },
+    );
+
+    let coordinator_app = app.clone();
+    let coordinator_session = session_id.to_string();
+    let spawned = std::thread::Builder::new()
+        .name("incremental-transcribe".to_string())
+        .spawn(move || run_coordinator(coordinator_app, coordinator_session, msg_rx, result_tx));
+
+    if let Err(error) = spawned {
+        log::warn!(
+            "Could not start incremental transcription coordinator for session {}; falling back to full-clip transcription. {}",
+            session_id,
+            error
+        );
+        registry_state.incremental().take(session_id);
+        return None;
+    }
+
+    log::info!(
+        "Incremental transcription active for session {} (segment silence {} ms, cap {} ms)",
+        session_id,
+        SEGMENT_SILENCE_MS,
+        SEGMENT_MAX_MS
+    );
+    Some(WorkerLink {
+        session_id: session_id.to_string(),
+        temp_dir,
+        msg_tx,
+        segmenter: Segmenter::new(source_sample_rate),
+        next_segment: 0,
+        failed: false,
+    })
+}
+
+/// Settings and model resolved once per session, at the first segment.
+struct SegmentContext {
+    model_path: PathBuf,
+    language: String,
+    vocabulary_prompt: String,
+}
+
+fn run_coordinator(
+    app: AppHandle,
+    session_id: String,
+    msg_rx: Receiver<Msg>,
+    result_tx: Sender<Result<AssembledTranscript, ()>>,
+) {
+    let mut texts: Vec<String> = Vec::new();
+    let mut segments: u32 = 0;
+    let mut failed = false;
+    let mut context: Option<SegmentContext> = None;
+
+    loop {
+        match msg_rx.recv() {
+            Ok(Msg::Segment(path)) => {
+                if !failed {
+                    let accumulated = join_segments(&texts);
+                    match transcribe_segment(&app, &mut context, &path, &accumulated) {
+                        Ok(text) => {
+                            segments += 1;
+                            if !text.is_empty() {
+                                texts.push(text);
+                            }
+                            emit_partial_transcript(
+                                &app,
+                                &session_id,
+                                &join_segments(&texts),
+                                segments,
+                                false,
+                            );
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "Incremental segment transcription failed for session {}; falling back to full-clip transcription. {}",
+                                session_id,
+                                error
+                            );
+                            failed = true;
+                        }
+                    }
+                }
+                let _ = fs::remove_file(&path);
+            }
+            Ok(Msg::Fail) => failed = true,
+            Ok(Msg::Finish) => {
+                let result = if failed {
+                    Err(())
+                } else {
+                    Ok(AssembledTranscript {
+                        text: join_segments(&texts),
+                        segments,
+                    })
+                };
+                let _ = result_tx.send(result);
+                break;
+            }
+            Ok(Msg::Cancel) | Err(_) => break,
+        }
+    }
+
+    // Session over (finish, cancel, or all senders gone): delete any segment
+    // WAVs still queued so nothing is left behind in the temp dir.
+    while let Ok(message) = msg_rx.try_recv() {
+        if let Msg::Segment(path) = message {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+fn transcribe_segment(
+    app: &AppHandle,
+    context: &mut Option<SegmentContext>,
+    wav_path: &Path,
+    accumulated: &str,
+) -> Result<String, String> {
+    if context.is_none() {
+        *context = Some(segment_context(app)?);
+    }
+    let context = context.as_ref().expect("segment context resolved above");
+
+    let transcription = app
+        .state::<WarmTranscriber>()
+        .transcribe(
+            app,
+            WhisperRequest {
+                model_path: context.model_path.clone(),
+                wav_path: wav_path.to_path_buf(),
+                language: context.language.clone(),
+                vocabulary_prompt: prompt_with_context(&context.vocabulary_prompt, accumulated),
+            },
+        )
+        .map_err(|error| error.message)?;
+
+    Ok(transcription.text)
+}
+
+fn segment_context(app: &AppHandle) -> Result<SegmentContext, String> {
+    let state = app.state::<BackendState>();
+    let db = state.db().map_err(|error| error.message)?;
+    let settings = db.get_settings().map_err(|error| error.message)?;
+    let (_, model_path) =
+        model_manager::selected_model_path(app, &db).map_err(|error| error.message)?;
+
+    Ok(SegmentContext {
+        model_path,
+        language: crate::dictation::whisper_language(&settings.language),
+        vocabulary_prompt: settings.vocabulary_prompt,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: u32 = 16_000;
+    /// 20 ms chunks at 16 kHz, matching the trim window granularity.
+    const CHUNK: usize = 320;
+
+    fn speech(ms: usize) -> Vec<f32> {
+        vec![0.5; RATE as usize * ms / 1_000]
+    }
+
+    fn silence(ms: usize) -> Vec<f32> {
+        vec![0.0; RATE as usize * ms / 1_000]
+    }
+
+    /// Above the silence threshold but below the speech threshold.
+    fn quiet(ms: usize) -> Vec<f32> {
+        vec![0.02; RATE as usize * ms / 1_000]
+    }
+
+    /// Feeds samples in 20 ms chunks and collects every finalized segment.
+    fn feed(segmenter: &mut Segmenter, samples: &[f32]) -> Vec<Vec<f32>> {
+        samples
+            .chunks(CHUNK)
+            .filter_map(|chunk| segmenter.push_chunk(chunk))
+            .collect()
+    }
+
+    #[test]
+    fn finalizes_on_silence_after_speech() {
+        let mut segmenter = Segmenter::new(RATE);
+        let mut audio = speech(1_000);
+        audio.extend(silence(700));
+
+        let segments = feed(&mut segmenter, &audio);
+
+        // 1 s of speech plus exactly the 500 ms trailing-silence marker.
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].len(), 16_000 + 8_000);
+        assert!(segmenter.take_tail().is_none());
+    }
+
+    #[test]
+    fn does_not_finalize_without_speech() {
+        let mut segmenter = Segmenter::new(RATE);
+        let mut audio = quiet(2_000);
+        audio.extend(silence(1_000));
+
+        let segments = feed(&mut segmenter, &audio);
+
+        assert!(segments.is_empty());
+        assert!(segmenter.take_tail().is_none());
+    }
+
+    #[test]
+    fn finalizes_at_hard_cap_during_continuous_speech() {
+        let mut segmenter = Segmenter::new(RATE);
+
+        let segments = feed(&mut segmenter, &speech(27_000));
+
+        assert_eq!(segments.len(), 1);
+        // Finalized at the 25 s cap (the first chunk that crosses it).
+        assert_eq!(segments[0].len(), RATE as usize * 25);
+        // The rest stays buffered as the next segment's start.
+        let tail = segmenter.take_tail().expect("tail contains speech");
+        assert_eq!(tail.len(), RATE as usize * 2);
+    }
+
+    #[test]
+    fn hard_cap_without_speech_keeps_buffer_bounded_and_discards() {
+        let mut segmenter = Segmenter::new(RATE);
+
+        let segments = feed(&mut segmenter, &quiet(60_000));
+
+        assert!(segments.is_empty());
+        assert!(segmenter.samples.len() <= RATE as usize * 25 + CHUNK);
+        assert!(segmenter.take_tail().is_none());
+    }
+
+    #[test]
+    fn leading_silence_is_never_accumulated() {
+        let mut segmenter = Segmenter::new(RATE);
+        let mut audio = silence(1_000);
+        audio.extend(speech(1_000));
+        audio.extend(silence(700));
+
+        let segments = feed(&mut segmenter, &audio);
+
+        // The leading second of silence is skipped entirely: the segment is
+        // just the speech plus the 500 ms trailing-silence marker.
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].len(), 16_000 + 8_000);
+    }
+
+    #[test]
+    fn tail_flushes_speech_without_silence_requirement() {
+        let mut segmenter = Segmenter::new(RATE);
+
+        let segments = feed(&mut segmenter, &speech(300));
+
+        assert!(segments.is_empty());
+        let tail = segmenter.take_tail().expect("tail contains speech");
+        assert_eq!(tail.len(), 4_800);
+        // The tail consumed the buffer; a second flush yields nothing.
+        assert!(segmenter.take_tail().is_none());
+    }
+
+    #[test]
+    fn joins_segments_with_single_spaces_dropping_empties() {
+        let texts = vec![
+            " Hello there. ".to_string(),
+            String::new(),
+            "   ".to_string(),
+            "Second phrase.".to_string(),
+        ];
+
+        assert_eq!(join_segments(&texts), "Hello there. Second phrase.");
+        assert_eq!(join_segments(&[]), "");
+    }
+
+    #[test]
+    fn prompt_combines_vocabulary_and_context_tail() {
+        assert_eq!(prompt_with_context("", ""), "");
+        assert_eq!(
+            prompt_with_context(" LocalDictate, Tauri ", ""),
+            "LocalDictate, Tauri"
+        );
+        assert_eq!(prompt_with_context("", "previous text"), "previous text");
+        assert_eq!(
+            prompt_with_context("LocalDictate", "previous text"),
+            "LocalDictate previous text"
+        );
+    }
+
+    #[test]
+    fn prompt_context_is_limited_to_the_last_200_chars() {
+        let accumulated = "x".repeat(300);
+
+        let prompt = prompt_with_context("vocab", &accumulated);
+
+        assert_eq!(prompt, format!("vocab {}", "x".repeat(200)));
+    }
+
+    #[test]
+    fn prompt_context_truncation_respects_char_boundaries() {
+        let accumulated = "é".repeat(300);
+
+        let prompt = prompt_with_context("", &accumulated);
+
+        assert_eq!(prompt.chars().count(), 200);
+        assert!(prompt.chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn text_tail_returns_short_text_unchanged() {
+        assert_eq!(text_tail("short", 200), "short");
+        assert_eq!(text_tail("anything", 0), "");
+    }
+}
