@@ -19,7 +19,7 @@ Windows 10/11 x64 only, by design. There are no plans to over-build this for oth
    - The installer bootstraps Microsoft WebView2 automatically if you don't have it.
 2. Launch LocalDictate. Open the **Models** tab and download a model — `base.en` (~140 MB) is a good start; `small.en` is more accurate and still fast on modern CPUs. Models download once from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and run entirely offline afterward.
 3. Open the **Audio** tab, pick your microphone, and use **Record test** / **Play test** to confirm it hears you.
-4. Put your cursor in any app, hold `Ctrl+Shift`, and talk.
+4. Put your cursor in any app, hold `Ctrl+Win`, and talk.
 
 Closing the window minimizes to the tray; dictation hotkeys keep working. Quit from the tray icon.
 
