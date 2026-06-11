@@ -1277,6 +1277,29 @@ function SettingsView({
           />
         </SettingRow>
         <SettingRow
+          description="What the pill shows while you dictate."
+          label="Pill display mode"
+        >
+          <select
+            disabled={actions.savingSettings}
+            onChange={(event) =>
+              actions.updateSettings({
+                pillDisplayMode:
+                  event.currentTarget.value === "dot"
+                    ? "dot"
+                    : event.currentTarget.value === "visualizer"
+                      ? "visualizer"
+                      : "visualizer_with_text",
+              })
+            }
+            value={settings.pillDisplayMode}
+          >
+            <option value="dot">Dot</option>
+            <option value="visualizer">Visualizer</option>
+            <option value="visualizer_with_text">Visualizer + text</option>
+          </select>
+        </SettingRow>
+        <SettingRow
           description="Display completion and failure notices."
           label="Notifications"
         >

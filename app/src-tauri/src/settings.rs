@@ -15,6 +15,10 @@ pub struct AppSettings {
     pub launch_at_startup: bool,
     pub minimize_to_tray: bool,
     pub show_floating_pill: bool,
+    /// What the floating pill shows while recording: a minimal status dot,
+    /// the waveform visualizer, or the visualizer with live transcript text.
+    #[serde(default = "default_pill_display_mode")]
+    pub pill_display_mode: PillDisplayMode,
     pub notifications_enabled: bool,
     pub sounds_enabled: bool,
     /// Inert: hold-to-talk and toggle hotkeys both always work now. The field
@@ -67,6 +71,18 @@ fn default_silence_auto_stop_ms() -> u32 {
 
 fn default_incremental_transcription_enabled() -> bool {
     true
+}
+
+fn default_pill_display_mode() -> PillDisplayMode {
+    PillDisplayMode::VisualizerWithText
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PillDisplayMode {
+    Dot,
+    Visualizer,
+    VisualizerWithText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +168,7 @@ impl Default for AppSettings {
             launch_at_startup: false,
             minimize_to_tray: true,
             show_floating_pill: true,
+            pill_display_mode: default_pill_display_mode(),
             notifications_enabled: true,
             sounds_enabled: true,
             recording_mode: RecordingMode::Both,
@@ -312,6 +329,10 @@ mod tests {
         assert_eq!(settings.vocabulary_prompt, "");
         assert!(settings.history_enabled);
         assert!(settings.save_audio_clips);
+        assert_eq!(
+            settings.pill_display_mode,
+            PillDisplayMode::VisualizerWithText
+        );
     }
 
     #[test]
@@ -485,6 +506,10 @@ mod tests {
         assert!(settings.incremental_transcription_enabled);
         assert_eq!(settings.vocabulary_prompt, "");
         assert_eq!(settings.output_mode, OutputMode::SaveOnly);
+        assert_eq!(
+            settings.pill_display_mode,
+            PillDisplayMode::VisualizerWithText
+        );
     }
 
     #[test]

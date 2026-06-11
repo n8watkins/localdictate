@@ -188,9 +188,7 @@ fn transcribe_recording_inner(
     // never fail the dictation itself.
     if settings.save_audio_clips {
         match save_audio_clip(app, &wav_path, &transcript.id) {
-            Ok(clip_path) => {
-                transcript.audio_path = Some(clip_path.to_string_lossy().into_owned())
-            }
+            Ok(clip_path) => transcript.audio_path = Some(clip_path.to_string_lossy().into_owned()),
             Err(error) => log::warn!(
                 "Could not save audio clip for transcript {}: {}",
                 transcript.id,

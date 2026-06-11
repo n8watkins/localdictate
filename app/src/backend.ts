@@ -30,6 +30,7 @@ export type OutputMode =
   | "copy_and_paste";
 export type PasteMethod = "direct_insert" | "clipboard_restore";
 export type HistoryRetentionDays = 7 | 30 | 90 | 365 | null;
+export type PillDisplayMode = "dot" | "visualizer" | "visualizer_with_text";
 
 export type HotkeySettings = {
   holdToTalk: string;
@@ -43,6 +44,7 @@ export type AppSettings = {
   launchAtStartup: boolean;
   minimizeToTray: boolean;
   showFloatingPill: boolean;
+  pillDisplayMode: PillDisplayMode;
   notificationsEnabled: boolean;
   soundsEnabled: boolean;
   recordingMode: RecordingMode;

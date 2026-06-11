@@ -3,10 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import {
   currentMonitor,
   getCurrentWindow,
+  LogicalSize,
   PhysicalPosition,
 } from "@tauri-apps/api/window";
 import { Check } from "lucide-react";
 import {
+  copyTranscript,
   getAppState,
   getSettings,
   stopRecording,
@@ -16,7 +18,9 @@ import {
   type AppStateSnapshot,
   type AppStatus,
   type AudioLevelEvent,
+  type DictationResult,
   type PartialTranscriptEvent,
+  type PillDisplayMode,
 } from "./backend";
 import "./pill.css";
 
@@ -30,9 +34,10 @@ const VISIBLE_STATUSES: ReadonlySet<AppStatus> = new Set([
 ]);
 
 const READY_HIDE_DELAY_MS = 2000;
+const CONFIRM_HIDE_DELAY_MS = 5000;
+const COPIED_RESET_MS = 1500;
 const MOVE_PERSIST_DEBOUNCE_MS = 600;
 const BOTTOM_MARGIN_PX = 90;
-const PARTIAL_TAIL_CHARS = 44;
 const DRAG_THRESHOLD_PX = 4;
 
 const BAR_COUNT = 15;
@@ -40,11 +45,42 @@ const BAR_COUNT = 15;
 const BAR_MIN_SCALE = 0.14;
 const BAR_ATTACK = 0.45;
 const BAR_DECAY = 0.16;
+// Normal speech RMS sits around 0.03-0.15, so raw values barely move the
+// bars. Normalize against this ceiling before the perceptual curve.
+const RMS_CEILING = 0.12;
 
-function partialTail(text: string) {
-  return text.length > PARTIAL_TAIL_CHARS
-    ? `…${text.slice(-PARTIAL_TAIL_CHARS)}`
-    : text;
+/**
+ * The pill window renders one of three physical layouts; each maps to a fixed
+ * logical window size so nothing is clipped (the CSS in pill.css must fit
+ * inside these).
+ */
+type PillLayout = "dot" | "bar" | "text";
+
+const LAYOUT_SIZES: Record<PillLayout, { width: number; height: number }> = {
+  dot: { width: 58, height: 56 },
+  bar: { width: 230, height: 56 },
+  text: { width: 340, height: 170 },
+};
+
+function pillLayout(
+  mode: PillDisplayMode,
+  recording: boolean,
+  confirming: boolean,
+): PillLayout {
+  if (mode === "visualizer_with_text" && (recording || confirming)) {
+    return "text";
+  }
+  // The confirmation header (check + "Transcribed" + Copy) needs the full
+  // bar width even in dot mode.
+  if (mode === "dot" && !confirming) {
+    return "dot";
+  }
+  return "bar";
+}
+
+/** Maps raw mic RMS to a 0..1 perceptual level that visibly animates bars. */
+function perceptualLevel(rms: number) {
+  return Math.sqrt(Math.min(1, Math.max(0, rms) / RMS_CEILING));
 }
 
 function pillTone(status: AppStatus) {
@@ -87,7 +123,7 @@ function pillLabel(appState: AppStateSnapshot): string {
  * displayed bars toward their targets by mutating `transform: scaleY(...)`
  * directly (no React state per frame, compositor-only updates).
  */
-function Visualizer({ compact }: { compact: boolean }) {
+function Visualizer() {
   const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
   const historyRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
   const displayRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
@@ -99,7 +135,7 @@ function Visualizer({ compact }: { compact: boolean }) {
 
     void listen<AudioLevelEvent>("audio://level", (event) => {
       const history = historyRef.current;
-      history.push(Math.min(1, Math.max(0, event.payload.level)));
+      history.push(perceptualLevel(event.payload.rms));
       if (history.length > BAR_COUNT) {
         history.shift();
       }
@@ -114,9 +150,7 @@ function Visualizer({ compact }: { compact: boolean }) {
       const history = historyRef.current;
       const display = displayRef.current;
       for (let i = 0; i < BAR_COUNT; i += 1) {
-        // Perceptual lift so quiet speech still moves the bars.
-        const target =
-          BAR_MIN_SCALE + Math.pow(history[i] ?? 0, 0.65) * (1 - BAR_MIN_SCALE);
+        const target = BAR_MIN_SCALE + (history[i] ?? 0) * (1 - BAR_MIN_SCALE);
         const current = display[i];
         const rate = target > current ? BAR_ATTACK : BAR_DECAY;
         display[i] = current + (target - current) * rate;
@@ -137,10 +171,7 @@ function Visualizer({ compact }: { compact: boolean }) {
   }, []);
 
   return (
-    <div
-      aria-hidden="true"
-      className={`pill-bars${compact ? " compact" : ""}`}
-    >
+    <div aria-hidden="true" className="pill-bars">
       {Array.from({ length: BAR_COUNT }, (_, i) => (
         <span
           className="pill-bar"
@@ -159,8 +190,14 @@ function PillApp() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [stopping, setStopping] = useState(false);
   const [partial, setPartial] = useState<PartialTranscriptEvent | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
   const settingsRef = useRef<AppSettings | null>(null);
   const positionedRef = useRef(false);
+  const sizedLayoutRef = useRef<PillLayout | null>(null);
   const pointerRef = useRef<{ x: number; y: number; dragging: boolean } | null>(
     null,
   );
@@ -219,7 +256,8 @@ function PillApp() {
     };
   }, []);
 
-  // Track the live transcript for the active session.
+  // Track the live transcript for the active session, plus the final
+  // transcript for the post-transcription confirmation state.
   useEffect(() => {
     let disposed = false;
     let unlisteners: Array<() => void> = [];
@@ -234,8 +272,17 @@ function PillApp() {
             setPartial(event.payload);
           },
         ),
+        listen<DictationResult>("localdictate:dictation-transcribed", (event) => {
+          setConfirmation({
+            id: event.payload.transcript.id,
+            text: event.payload.transcript.text,
+          });
+          setCopied(false);
+        }),
         listen("audio://recording-started", () => {
           setPartial(null);
+          setConfirmation(null);
+          setCopied(false);
         }),
       ]);
 
@@ -251,6 +298,33 @@ function PillApp() {
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, []);
+
+  // The confirmation lingers for a few seconds, then the pill goes back to
+  // following app state (which has usually gone Idle by then, hiding it).
+  useEffect(() => {
+    if (!confirmation) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setConfirmation(null);
+      setCopied(false);
+    }, CONFIRM_HIDE_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [confirmation]);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setCopied(false);
+    }, COPIED_RESET_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [copied]);
 
   // Persist the pill position after the user drags it.
   useEffect(() => {
@@ -296,16 +370,24 @@ function PillApp() {
 
   const status = appState?.status ?? null;
   const showPill = settings?.showFloatingPill ?? false;
+  const displayMode = settings?.pillDisplayMode ?? "visualizer_with_text";
   const pillX = settings?.pillX ?? null;
   const pillY = settings?.pillY ?? null;
   const updatedAt = appState?.updatedAt ?? null;
+  const isRecording = status === "Recording";
+  const confirming = confirmation !== null;
+  const layout = pillLayout(displayMode, isRecording, confirming);
 
-  // Show/hide the native window to match app state.
+  // Show/hide and resize the native window to match app state and layout.
   useEffect(() => {
     const pillWindow = getCurrentWindow();
     let hideTimer: number | null = null;
 
-    if (!status || !showPill || !VISIBLE_STATUSES.has(status)) {
+    const visible =
+      showPill &&
+      (confirming || (status !== null && VISIBLE_STATUSES.has(status)));
+
+    if (!visible) {
       setPartial(null);
       void pillWindow.hide().catch(() => {});
       return;
@@ -313,6 +395,27 @@ function PillApp() {
 
     const show = async () => {
       try {
+        if (sizedLayoutRef.current !== layout) {
+          const previous = sizedLayoutRef.current;
+          sizedLayoutRef.current = layout;
+          const size = LAYOUT_SIZES[layout];
+          // Keep the bottom edge anchored across layout changes so a taller
+          // pill grows upward instead of clipping below the screen.
+          const deltaY =
+            previous !== null && positionedRef.current
+              ? Math.round(
+                  (LAYOUT_SIZES[previous].height - size.height) *
+                    (await pillWindow.scaleFactor()),
+                )
+              : 0;
+          const position = deltaY !== 0 ? await pillWindow.outerPosition() : null;
+          await pillWindow.setSize(new LogicalSize(size.width, size.height));
+          if (position && deltaY !== 0) {
+            await pillWindow.setPosition(
+              new PhysicalPosition(position.x, position.y + deltaY),
+            );
+          }
+        }
         if (!positionedRef.current) {
           positionedRef.current = true;
           if (typeof pillX === "number" && typeof pillY === "number") {
@@ -342,7 +445,7 @@ function PillApp() {
 
     void show();
 
-    if (status === "Ready") {
+    if (status === "Ready" && !confirming) {
       hideTimer = window.setTimeout(() => {
         setPartial(null);
         void pillWindow.hide().catch(() => {});
@@ -354,7 +457,7 @@ function PillApp() {
         window.clearTimeout(hideTimer);
       }
     };
-  }, [status, showPill, pillX, pillY, updatedAt]);
+  }, [status, showPill, pillX, pillY, updatedAt, confirming, layout]);
 
   const handleStop = useCallback(async () => {
     setStopping(true);
@@ -371,7 +474,22 @@ function PillApp() {
     }
   }, []);
 
-  const isRecording = appState?.status === "Recording";
+  const handleCopy = useCallback(async () => {
+    const current = confirmation;
+    if (!current) {
+      return;
+    }
+    try {
+      await copyTranscript(current.id);
+    } catch {
+      try {
+        await navigator.clipboard.writeText(current.text);
+      } catch {
+        return;
+      }
+    }
+    setCopied(true);
+  }, [confirmation]);
 
   // Manual click-vs-drag discrimination: data-tauri-drag-region would swallow
   // clicks, so we start the OS drag ourselves once the pointer travels past a
@@ -415,22 +533,49 @@ function PillApp() {
 
   return (
     <div
-      className={`pill-shell ${pillTone(appState.status)}`}
+      className={`pill-shell ${pillTone(appState.status)} layout-${layout}`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      title={isRecording ? "Click to stop - drag to move" : undefined}
+      title={
+        isRecording
+          ? "Click to stop - drag to move"
+          : layout === "dot" && label
+            ? label
+            : undefined
+      }
     >
-      {isRecording ? (
-        <>
+      {confirmation ? (
+        <div className="pill-confirm">
+          <div className="pill-confirm-head">
+            <Check aria-hidden="true" className="pill-check" size={14} />
+            <span className="pill-confirm-label">Transcribed</span>
+            <button
+              className={`pill-copy${copied ? " copied" : ""}`}
+              onClick={() => void handleCopy()}
+              onPointerDown={(event) => event.stopPropagation()}
+              type="button"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          {layout === "text" ? (
+            <div className="pill-text">{confirmation.text}</div>
+          ) : null}
+        </div>
+      ) : isRecording ? (
+        displayMode === "dot" ? (
           <span aria-hidden="true" className="pill-pulse" />
+        ) : (
           <div className="pill-rec">
-            <Visualizer compact={partialText.length > 0} />
-            {partialText ? (
-              <span className="pill-live">{partialTail(partialText)}</span>
+            <Visualizer />
+            {displayMode === "visualizer_with_text" ? (
+              <div className="pill-text">
+                {partialText || "Listening..."}
+              </div>
             ) : null}
           </div>
-        </>
+        )
       ) : (
         <>
           {appState.status === "Ready" ? (
@@ -438,9 +583,11 @@ function PillApp() {
           ) : (
             <span aria-hidden="true" className="pill-pulse" />
           )}
-          <span className="pill-label" title={label}>
-            {label}
-          </span>
+          {layout === "dot" ? null : (
+            <span className="pill-label" title={label}>
+              {label}
+            </span>
+          )}
         </>
       )}
     </div>
