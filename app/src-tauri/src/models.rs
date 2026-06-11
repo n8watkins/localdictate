@@ -55,6 +55,13 @@ pub struct ModelChecksum {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    AppData,
+    ExternalCache,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CatalogModel {
     pub id: &'static str,
@@ -86,6 +93,7 @@ pub struct ModelInfo {
     pub download_url: String,
     pub disk_size_label: String,
     pub local_path: Option<String>,
+    pub source: Option<ModelSource>,
     pub size_bytes: Option<u64>,
     pub status: ModelStatus,
     pub checksum: Option<ModelChecksum>,

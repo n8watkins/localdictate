@@ -133,6 +133,8 @@ export type ModelChecksum = {
   value: string;
 };
 
+export type ModelSource = "app_data" | "external_cache";
+
 export type ModelInfo = {
   id: string;
   name: string;
@@ -140,6 +142,7 @@ export type ModelInfo = {
   downloadUrl: string;
   diskSizeLabel: string;
   localPath: string | null;
+  source: ModelSource | null;
   sizeBytes: number | null;
   status: ModelStatus;
   checksum: ModelChecksum | null;

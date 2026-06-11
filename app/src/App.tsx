@@ -1517,11 +1517,17 @@ function ModelsView({
               status === "loaded";
             const isDownloading = status === "downloading";
             const isBusy = busyModelId === model.id;
+            const isManagedDownload = model.source === "app_data";
             return (
               <div className="model-row" key={model.id}>
                 <div>
                   <strong>{model.name}</strong>
-                  <span>{model.filename}</span>
+                  <span>
+                    {model.filename}
+                    {model.source === "external_cache"
+                      ? " - OpenWhispr cache"
+                      : ""}
+                  </span>
                   <div className="progress-track">
                     <div style={{ width: `${percent}%` }} />
                   </div>
@@ -1587,7 +1593,7 @@ function ModelsView({
                       Select
                     </button>
                   ) : null}
-                  {isDownloaded ? (
+                  {isDownloaded && isManagedDownload ? (
                     <IconButton
                       danger
                       disabled={isBusy || isDownloading}
@@ -1622,8 +1628,8 @@ function ModelsView({
           {settings.selectedModelId ?? "No model selected"}
         </strong>
         <p className="muted">
-          Downloaded models are stored under LocalDictate app data and resolved
-          by the backend at runtime.
+          LocalDictate uses its own app data models first, then compatible files
+          from the OpenWhispr cache.
         </p>
       </article>
 

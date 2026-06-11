@@ -18,13 +18,22 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     db::Database,
     error::CommandError,
-    models::{self, CatalogModel, ModelInfo, ModelRecord, ModelStatus, DEFAULT_MODEL_ID},
+    models::{
+        self, CatalogModel, ModelInfo, ModelRecord, ModelSource, ModelStatus, DEFAULT_MODEL_ID,
+    },
     settings::AppSettings,
 };
 
 #[derive(Default)]
 pub struct DownloadRegistry {
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedModelFile {
+    path: PathBuf,
+    source: ModelSource,
+    size_bytes: u64,
 }
 
 impl DownloadRegistry {
@@ -100,7 +109,6 @@ pub fn list_models(
     db: &Database,
     downloads: &DownloadRegistry,
 ) -> Result<Vec<ModelInfo>, CommandError> {
-    let model_dir = models_dir(app)?;
     let settings = db.get_settings()?;
     let records = db
         .list_model_records()?
@@ -108,18 +116,18 @@ pub fn list_models(
         .map(|record| (record.id.clone(), record))
         .collect::<HashMap<_, _>>();
 
-    Ok(models::catalog()
+    models::catalog()
         .iter()
         .map(|catalog_model| {
             model_info_for_catalog(
+                app,
                 *catalog_model,
-                &model_dir,
                 records.get(catalog_model.id),
                 &settings,
                 downloads,
             )
         })
-        .collect())
+        .collect()
 }
 
 pub fn download_model(
@@ -170,7 +178,7 @@ pub fn delete_model(
     model_id: &str,
 ) -> Result<ModelInfo, CommandError> {
     let catalog_model = catalog_model(model_id)?;
-    let model_path = model_path(app, catalog_model)?;
+    let model_path = app_data_model_path(app, catalog_model)?;
     let part_path = partial_path(app, catalog_model)?;
 
     match fs::remove_file(&model_path) {
@@ -188,7 +196,7 @@ pub fn delete_model(
 
     let mut settings = db.get_settings()?;
     let was_selected = settings.selected_model_id.as_deref() == Some(model_id);
-    if was_selected {
+    if was_selected && resolve_model_file(app, catalog_model)?.is_none() {
         settings.selected_model_id = None;
         db.save_settings(&settings)?;
     }
@@ -207,13 +215,7 @@ pub fn delete_model(
     db.upsert_model_record(&record)?;
 
     let registry = DownloadRegistry::default();
-    Ok(model_info_for_catalog(
-        catalog_model,
-        &models_dir(app)?,
-        Some(&record),
-        &settings,
-        &registry,
-    ))
+    model_info_for_catalog(app, catalog_model, Some(&record), &settings, &registry)
 }
 
 pub fn select_model(
@@ -222,7 +224,17 @@ pub fn select_model(
     model_id: &str,
 ) -> Result<ModelInfo, CommandError> {
     let catalog_model = catalog_model(model_id)?;
-    let path = model_path(app, catalog_model)?;
+    let resolved = resolve_model_file(app, catalog_model)?;
+    let Some(resolved) = resolved else {
+        return Err(CommandError::new(
+            "whisper_model_missing",
+            format!(
+                "Selected Whisper model is missing. Re-download {} or place {} in a known model cache.",
+                catalog_model.name, catalog_model.filename
+            ),
+        ));
+    };
+    let path = resolved.path;
 
     if !path.is_file() {
         return Err(CommandError::new(
@@ -238,19 +250,13 @@ pub fn select_model(
     settings.selected_model_id = Some(model_id.to_string());
     db.save_settings(&settings)?;
 
-    let metadata = fs::metadata(&path).map_err(|error| {
-        CommandError::new(
-            "whisper_model_missing",
-            format!("Could not read {}. {}", path.display(), error),
-        )
-    })?;
     verify_model_file_checksum(catalog_model, &path)?;
     let record = ModelRecord {
         id: catalog_model.id.to_string(),
         name: catalog_model.name.to_string(),
         filename: catalog_model.filename.to_string(),
         local_path: Some(path.to_string_lossy().to_string()),
-        size_bytes: Some(metadata.len()),
+        size_bytes: Some(resolved.size_bytes),
         status: ModelStatus::Selected,
         checksum: catalog_model.expected_sha1.map(ToOwned::to_owned),
         selected: true,
@@ -260,13 +266,7 @@ pub fn select_model(
     db.mark_model_selected(model_id)?;
 
     let registry = DownloadRegistry::default();
-    Ok(model_info_for_catalog(
-        catalog_model,
-        &models_dir(app)?,
-        Some(&record),
-        &settings,
-        &registry,
-    ))
+    model_info_for_catalog(app, catalog_model, Some(&record), &settings, &registry)
 }
 
 pub fn selected_model_path(
@@ -279,19 +279,19 @@ pub fn selected_model_path(
         .as_deref()
         .unwrap_or(DEFAULT_MODEL_ID);
     let catalog_model = catalog_model(model_id)?;
-    let path = model_path(app, catalog_model)?;
+    let resolved = resolve_model_file(app, catalog_model)?;
 
-    if !path.is_file() {
+    let Some(resolved) = resolved else {
         return Err(CommandError::new(
             "whisper_model_missing",
             format!(
-                "Selected Whisper model is missing. Re-download {} or choose another model.",
-                catalog_model.name
+                "Selected Whisper model is missing. Re-download {} or place {} in a known model cache.",
+                catalog_model.name, catalog_model.filename
             ),
         ));
-    }
+    };
 
-    Ok((catalog_model.id.to_string(), path))
+    Ok((catalog_model.id.to_string(), resolved.path))
 }
 
 fn download_model_inner(
@@ -366,13 +366,7 @@ fn download_model_inner(
 
     let settings = db.get_settings()?;
     let registry = DownloadRegistry::default();
-    Ok(model_info_for_catalog(
-        catalog_model,
-        &model_dir,
-        Some(&record),
-        &settings,
-        &registry,
-    ))
+    model_info_for_catalog(app, catalog_model, Some(&record), &settings, &registry)
 }
 
 #[derive(Debug)]
@@ -579,22 +573,19 @@ fn emit_progress(
 }
 
 fn model_info_for_catalog(
+    app: &AppHandle,
     catalog_model: CatalogModel,
-    model_dir: &PathBuf,
     record: Option<&ModelRecord>,
     settings: &AppSettings,
     downloads: &DownloadRegistry,
-) -> ModelInfo {
-    let path = model_dir.join(catalog_model.filename);
-    let file_metadata = fs::metadata(&path)
-        .ok()
-        .filter(|metadata| metadata.is_file());
+) -> Result<ModelInfo, CommandError> {
+    let resolved = resolve_model_file(app, catalog_model)?;
     let selected = settings.selected_model_id.as_deref() == Some(catalog_model.id);
     let status = if downloads.is_downloading(catalog_model.id) {
         ModelStatus::Downloading
-    } else if file_metadata.is_some() && selected {
+    } else if resolved.is_some() && selected {
         ModelStatus::Selected
-    } else if file_metadata.is_some() {
+    } else if resolved.is_some() {
         ModelStatus::Downloaded
     } else {
         record
@@ -603,30 +594,39 @@ fn model_info_for_catalog(
             .unwrap_or(ModelStatus::NotDownloaded)
     };
 
-    ModelInfo {
+    let local_path = resolved
+        .as_ref()
+        .map(|resolved| resolved.path.to_string_lossy().to_string());
+    let source = resolved.as_ref().map(|resolved| resolved.source);
+    let size_bytes = resolved
+        .as_ref()
+        .map(|resolved| resolved.size_bytes)
+        .or_else(|| record.and_then(|record| record.size_bytes));
+
+    Ok(ModelInfo {
         id: catalog_model.id.to_string(),
         name: catalog_model.name.to_string(),
         filename: catalog_model.filename.to_string(),
         download_url: catalog_model.download_url(),
         disk_size_label: catalog_model.disk_size_label.to_string(),
-        local_path: file_metadata
-            .as_ref()
-            .map(|_| path.to_string_lossy().to_string()),
-        size_bytes: file_metadata
-            .map(|metadata| metadata.len())
-            .or_else(|| record.and_then(|record| record.size_bytes)),
+        local_path,
+        source,
+        size_bytes,
         status,
         checksum: catalog_model.checksum(),
         selected,
         downloaded_at: record.and_then(|record| record.downloaded_at),
-    }
+    })
 }
 
 fn models_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
     Ok(app_data_dir(app)?.join("models"))
 }
 
-fn model_path(app: &AppHandle, catalog_model: CatalogModel) -> Result<PathBuf, CommandError> {
+fn app_data_model_path(
+    app: &AppHandle,
+    catalog_model: CatalogModel,
+) -> Result<PathBuf, CommandError> {
     Ok(models_dir(app)?.join(catalog_model.filename))
 }
 
@@ -644,6 +644,65 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
             ),
         )
     })
+}
+
+fn resolve_model_file(
+    app: &AppHandle,
+    catalog_model: CatalogModel,
+) -> Result<Option<ResolvedModelFile>, CommandError> {
+    for (path, source) in model_file_candidates(app, catalog_model)? {
+        let metadata = fs::metadata(&path)
+            .ok()
+            .filter(|metadata| metadata.is_file());
+
+        if let Some(metadata) = metadata {
+            return Ok(Some(ResolvedModelFile {
+                path,
+                source,
+                size_bytes: metadata.len(),
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn model_file_candidates(
+    app: &AppHandle,
+    catalog_model: CatalogModel,
+) -> Result<Vec<(PathBuf, ModelSource)>, CommandError> {
+    let mut candidates = vec![(
+        app_data_model_path(app, catalog_model)?,
+        ModelSource::AppData,
+    )];
+
+    candidates.extend(
+        external_model_dirs()
+            .into_iter()
+            .map(|dir| (dir.join(catalog_model.filename), ModelSource::ExternalCache)),
+    );
+
+    Ok(candidates)
+}
+
+fn external_model_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(path) = std::env::var_os("LOCALDICTATE_MODEL_DIR") {
+        dirs.push(PathBuf::from(path));
+    }
+
+    #[cfg(windows)]
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        dirs.push(
+            PathBuf::from(profile)
+                .join(".cache")
+                .join("openwhispr")
+                .join("whisper-models"),
+        );
+    }
+
+    dirs
 }
 
 fn catalog_model(model_id: &str) -> Result<CatalogModel, CommandError> {
