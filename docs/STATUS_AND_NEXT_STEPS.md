@@ -1,7 +1,13 @@
 # LocalDictate - Status and Next Steps
 
+> **Current handoff: see [`docs/HANDOFF.md`](HANDOFF.md)** — it carries the
+> 2026-06-11 evening session (timeout-freeze fix, defaults v4, saved audio
+> clips + playback, pill display modes, paste focus guard, tail-clipping fix,
+> file transcription) and the up-to-date next steps. This doc keeps the longer
+> project history.
+
 Status: V1 shipped — working Windows installer, hotkey dictation verified on real hardware by the owner  
-Last updated: 2026-06-11  
+Last updated: 2026-06-11 (see HANDOFF.md for the latest session)  
 Repository: `https://github.com/n8watkins/localdictate` (private; ready to flip public)  
 Release: [v0.1.0](https://github.com/n8watkins/localdictate/releases/tag/v0.1.0) with the NSIS installer attached
 
@@ -36,13 +42,17 @@ LocalDictate is a working product: hold `Ctrl+Shift` (or tap `~`), talk, and tex
 
 ## What to do next (priority order)
 
-1. **Incremental transcription** — the flagship next feature. While recording, cut phrase segments at natural pauses (the RMS machinery exists) and transcribe them in the background via the warm server; on stop, only the last phrase remains. Show accumulating text in the pill; optionally type finalized phrases live. The transcription service was built for exactly this.
-2. **Flip the repo public** (owner action — Settings → Change visibility). Everything is in place.
-3. **CI release workflow** — GitHub Actions on tag push: build on `windows-latest`, fetch whisper.cpp binaries, attach installer to a release. Removes the manual build/upload loop.
-4. **Launch at startup** — wire the existing `launchAtStartup` setting to `tauri-plugin-autostart`.
-5. **Auto-updater** — `tauri-plugin-updater` once CI exists (needs updater signing keys; unrelated to code signing).
-6. **Code signing** — kills the SmartScreen warning; costs money; matters once strangers install it.
-7. Smaller: GPU whisper builds as optional download, tray icon state variants, FTS5 search if histories grow, pill shutdown when main window closes with tray-minimize off (known edge case, currently moot).
+Done since this list was written: incremental transcription (shipped),
+tag-triggered CI release workflow + manual dispatch (shipped), launch at
+startup (wired). Current priorities live in [`docs/HANDOFF.md`](HANDOFF.md) —
+short version: visual QA of the 06-11 evening session, the Notes feature
+(needs owner sign-off on details), removing the OpenWhispr cache fallback.
+
+Still-open carry-overs:
+1. **Flip the repo public** (owner action — Settings → Change visibility). Everything is in place.
+2. **Auto-updater** — `tauri-plugin-updater` (needs updater signing keys; unrelated to code signing).
+3. **Code signing** — kills the SmartScreen warning; costs money; matters once strangers install it.
+4. Smaller: GPU whisper builds as optional download, tray icon state variants, FTS5 search if histories grow, pill shutdown when main window closes with tray-minimize off (known edge case, currently moot).
 
 ## Working notes for the next session
 
