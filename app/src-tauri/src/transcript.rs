@@ -86,6 +86,18 @@ mod tests {
 
     #[test]
     fn last_buffer_rejects_empty_text() {
+        // This is the single empty-transcription classifier: both the
+        // incremental and full-clip dictation paths funnel through it, and a
+        // None here means "benign empty dictation", never an error.
+        assert!(Transcript::new_last_buffer("", Some(1000), None, None).is_none());
         assert!(Transcript::new_last_buffer("   ", Some(1000), None, None).is_none());
+        assert!(Transcript::new_last_buffer("\n\t \r\n", Some(1000), None, None).is_none());
+    }
+
+    #[test]
+    fn last_buffer_accepts_text_with_surrounding_whitespace() {
+        let transcript = Transcript::new_last_buffer(" hello \n", Some(1000), None, None).unwrap();
+
+        assert_eq!(transcript.word_count, 1);
     }
 }

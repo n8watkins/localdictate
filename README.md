@@ -2,7 +2,7 @@
 
 Private, local-first dictation for Windows. Hold a hotkey, talk, release — your words are transcribed on your own machine by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and inserted wherever your cursor is. No cloud, no account, no audio ever leaving your PC.
 
-- **Push-to-talk:** hold `Ctrl+Shift`, speak, release.
+- **Push-to-talk:** hold `Ctrl+Win`, speak, release.
 - **Toggle mode:** tap `` ` `` (tilde) to start/stop hands-free.
 - **Paste last transcript:** `Ctrl+Alt+V` re-inserts your most recent dictation anywhere.
 - **Floating pill:** a small always-on-top status pill shows recording/transcribing state even while the app is hidden in the tray. Drag it anywhere; it remembers its spot. Click it to stop recording.
@@ -27,10 +27,10 @@ Closing the window minimizes to the tray; dictation hotkeys keep working. Quit f
 
 | Action | Default |
 | --- | --- |
-| Hold to talk | `Ctrl+Shift` (hold) |
+| Hold to talk | `Ctrl+Win` (hold) |
 | Toggle dictation | `` ` `` (tilde) |
-| Paste last transcript | `Ctrl+Alt+V` |
-| Open dashboard | `Ctrl+Alt+D` |
+| Paste last transcript | `Ctrl+Shift+V` |
+| Open dashboard | `Ctrl+Alt+V` |
 
 If a hotkey conflicts with another app, rebind it in the **Hotkeys** tab — conflicts are reported inline.
 

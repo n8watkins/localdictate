@@ -346,6 +346,10 @@ function App() {
           showNotice(event.payload.message, "success");
           scheduleRefresh();
         }),
+        listen<{ message: string }>("localdictate:dictation-empty", (event) => {
+          showNotice(event.payload.message, "info");
+          scheduleRefresh();
+        }),
         listen<{ message: string }>("localdictate:output-failed", (event) => {
           showNotice(event.payload.message, "error");
           scheduleRefresh();

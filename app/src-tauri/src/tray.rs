@@ -1,12 +1,17 @@
 use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager,
 };
 
 use crate::{
-    app_state::AppStatus, audio, commands::BackendState, dictation, error::CommandError, output,
+    app_state::AppStatus,
+    audio::{self, RecordingResultStatus},
+    commands::BackendState,
+    dictation,
+    error::CommandError,
+    output,
 };
 
 const TRAY_ID: &str = "localdictate-main-tray";
@@ -67,7 +72,19 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("LocalDictate - Idle")
-        .show_menu_on_left_click(true)
+        // Left-click opens the dashboard (handled below); the menu stays on
+        // right-click only.
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = open_dashboard(tray.app_handle(), None);
+            }
+        })
         .on_menu_event(|app, event| match event.id().as_ref() {
             MENU_START_DICTATION => {
                 // Tray start behaves like the toggle hotkey (the user is not
@@ -133,6 +150,15 @@ pub fn stop_dictation(app: &AppHandle) -> Result<(), CommandError> {
     let result = audio::stop_recording_for_app(app)?;
     let status = state.app_state()?.status().clone();
     update_tray_status(app, status);
+
+    if result.status == RecordingResultStatus::TooShort {
+        // A quick tap of the toggle hotkey is benign, not an error: the
+        // state machine already returned to Idle (AudioTooShort), so just
+        // tell the frontend nothing was heard.
+        dictation::emit_dictation_empty(app);
+        return Ok(());
+    }
+
     dictation::transcribe_recording_for_app(app, result)?;
     let status = state.app_state()?.status().clone();
     update_tray_status(app, status);
@@ -170,7 +196,7 @@ pub fn open_dashboard(app: &AppHandle, route: Option<&str>) -> Result<(), Comman
     Ok(())
 }
 
-fn update_tray_status(app: &AppHandle, status: AppStatus) {
+pub(crate) fn update_tray_status(app: &AppHandle, status: AppStatus) {
     let label = match status {
         AppStatus::Idle => "Idle",
         AppStatus::Recording => "Recording",

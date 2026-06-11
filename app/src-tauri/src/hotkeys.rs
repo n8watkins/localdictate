@@ -551,7 +551,11 @@ fn toggle_dictation(app: &AppHandle) -> Result<(), CommandError> {
     let status = state.app_state()?.status().clone();
 
     match status {
-        AppStatus::Idle | AppStatus::Ready => tray::start_dictation(app, true),
+        // From Error the start path resets the state machine to Idle first
+        // (ResetError), so a wedged Error state never disables the toggle:
+        // pressing it again starts a fresh dictation. Hold-to-talk gets the
+        // same recovery for free because tray::start_dictation handles Error.
+        AppStatus::Idle | AppStatus::Ready | AppStatus::Error => tray::start_dictation(app, true),
         AppStatus::Recording => tray::stop_dictation(app),
         _ => Ok(()),
     }

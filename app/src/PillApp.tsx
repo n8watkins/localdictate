@@ -5,7 +5,7 @@ import {
   getCurrentWindow,
   PhysicalPosition,
 } from "@tauri-apps/api/window";
-import { Square } from "lucide-react";
+import { Check } from "lucide-react";
 import {
   getAppState,
   getSettings,
@@ -15,6 +15,7 @@ import {
   type AppSettings,
   type AppStateSnapshot,
   type AppStatus,
+  type AudioLevelEvent,
   type PartialTranscriptEvent,
 } from "./backend";
 import "./pill.css";
@@ -28,10 +29,17 @@ const VISIBLE_STATUSES: ReadonlySet<AppStatus> = new Set([
   "Error",
 ]);
 
-const READY_HIDE_DELAY_MS = 5000;
+const READY_HIDE_DELAY_MS = 2000;
 const MOVE_PERSIST_DEBOUNCE_MS = 600;
 const BOTTOM_MARGIN_PX = 90;
-const PARTIAL_TAIL_CHARS = 60;
+const PARTIAL_TAIL_CHARS = 44;
+const DRAG_THRESHOLD_PX = 4;
+
+const BAR_COUNT = 15;
+// Bars never collapse to nothing; silence reads as a low resting line.
+const BAR_MIN_SCALE = 0.14;
+const BAR_ATTACK = 0.45;
+const BAR_DECAY = 0.16;
 
 function partialTail(text: string) {
   return text.length > PARTIAL_TAIL_CHARS
@@ -56,23 +64,94 @@ function pillTone(status: AppStatus) {
   }
 }
 
-function pillLines(appState: AppStateSnapshot): [string, string] {
+function pillLabel(appState: AppStateSnapshot): string {
   switch (appState.status) {
-    case "Recording":
-      return ["Recording...", "Click to stop · drag to move"];
     case "Stopping":
-      return ["Saving audio...", "Preparing transcription"];
+      return "Saving...";
     case "Transcribing":
-      return ["Transcribing...", "Whisper is running locally"];
+      return "Transcribing...";
     case "Pasting":
-      return ["Inserting transcript...", "Clipboard preserved"];
+      return "Inserting...";
     case "Ready":
-      return ["Transcript ready", "Saved to Last Transcript"];
+      return "Done";
     case "Error":
-      return ["Needs attention", appState.error?.message ?? "Check LocalDictate"];
+      return appState.error?.message ?? "Check LocalDictate";
     default:
-      return ["Ready for dictation", ""];
+      return "";
   }
+}
+
+/**
+ * Rolling waveform of recent mic levels. New samples enter on the right and
+ * scroll left as the history shifts; a requestAnimationFrame loop eases the
+ * displayed bars toward their targets by mutating `transform: scaleY(...)`
+ * directly (no React state per frame, compositor-only updates).
+ */
+function Visualizer({ compact }: { compact: boolean }) {
+  const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const historyRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
+  const displayRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    let frame = 0;
+
+    void listen<AudioLevelEvent>("audio://level", (event) => {
+      const history = historyRef.current;
+      history.push(Math.min(1, Math.max(0, event.payload.level)));
+      if (history.length > BAR_COUNT) {
+        history.shift();
+      }
+    }).then((stop) => {
+      unlisten = stop;
+      if (disposed) {
+        stop();
+      }
+    });
+
+    const tick = () => {
+      const history = historyRef.current;
+      const display = displayRef.current;
+      for (let i = 0; i < BAR_COUNT; i += 1) {
+        // Perceptual lift so quiet speech still moves the bars.
+        const target =
+          BAR_MIN_SCALE + Math.pow(history[i] ?? 0, 0.65) * (1 - BAR_MIN_SCALE);
+        const current = display[i];
+        const rate = target > current ? BAR_ATTACK : BAR_DECAY;
+        display[i] = current + (target - current) * rate;
+        const bar = barsRef.current[i];
+        if (bar) {
+          bar.style.transform = `scaleY(${display[i].toFixed(3)})`;
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      unlisten?.();
+    };
+  }, []);
+
+  return (
+    <div
+      aria-hidden="true"
+      className={`pill-bars${compact ? " compact" : ""}`}
+    >
+      {Array.from({ length: BAR_COUNT }, (_, i) => (
+        <span
+          className="pill-bar"
+          key={i}
+          ref={(el) => {
+            barsRef.current[i] = el;
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 function PillApp() {
@@ -82,6 +161,9 @@ function PillApp() {
   const [partial, setPartial] = useState<PartialTranscriptEvent | null>(null);
   const settingsRef = useRef<AppSettings | null>(null);
   const positionedRef = useRef(false);
+  const pointerRef = useRef<{ x: number; y: number; dragging: boolean } | null>(
+    null,
+  );
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -289,46 +371,78 @@ function PillApp() {
     }
   }, []);
 
+  const isRecording = appState?.status === "Recording";
+
+  // Manual click-vs-drag discrimination: data-tauri-drag-region would swallow
+  // clicks, so we start the OS drag ourselves once the pointer travels past a
+  // small threshold, and treat a still pointerup as a click (stop recording).
+  const handlePointerDown = useCallback((event: React.PointerEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    pointerRef.current = { x: event.clientX, y: event.clientY, dragging: false };
+  }, []);
+
+  const handlePointerMove = useCallback((event: React.PointerEvent) => {
+    const start = pointerRef.current;
+    if (!start || start.dragging) {
+      return;
+    }
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+      start.dragging = true;
+      // Hands the gesture to the OS; no further pointer events arrive, and
+      // onMoved persistence picks the new position up afterwards.
+      void getCurrentWindow().startDragging().catch(() => {});
+    }
+  }, []);
+
+  const handlePointerUp = useCallback(() => {
+    const start = pointerRef.current;
+    pointerRef.current = null;
+    if (start && !start.dragging && isRecording && !stopping) {
+      void handleStop();
+    }
+  }, [handleStop, isRecording, stopping]);
+
   if (!appState) {
     return null;
   }
 
-  const [title, subtitle] = pillLines(appState);
-  const isRecording = appState.status === "Recording";
   const partialText = partial?.text.trim() ?? "";
+  const label = pillLabel(appState);
 
   return (
     <div
       className={`pill-shell ${pillTone(appState.status)}`}
-      data-tauri-drag-region
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      title={isRecording ? "Click to stop - drag to move" : undefined}
     >
-      <span aria-hidden="true" className="pill-pulse" data-tauri-drag-region />
-      <div className="pill-text" data-tauri-drag-region>
-        <strong data-tauri-drag-region>{title}</strong>
-        {partialText ? (
-          <span
-            className="pill-live"
-            data-tauri-drag-region
-            title={partialText}
-          >
-            {partialTail(partialText)}
-          </span>
-        ) : subtitle ? (
-          <span data-tauri-drag-region>{subtitle}</span>
-        ) : null}
-      </div>
       {isRecording ? (
-        <button
-          aria-label="Stop recording"
-          className="pill-stop"
-          disabled={stopping}
-          onClick={() => void handleStop()}
-          title="Stop recording"
-          type="button"
-        >
-          <Square aria-hidden="true" size={13} />
-        </button>
-      ) : null}
+        <>
+          <span aria-hidden="true" className="pill-pulse" />
+          <div className="pill-rec">
+            <Visualizer compact={partialText.length > 0} />
+            {partialText ? (
+              <span className="pill-live">{partialTail(partialText)}</span>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <>
+          {appState.status === "Ready" ? (
+            <Check aria-hidden="true" className="pill-check" size={14} />
+          ) : (
+            <span aria-hidden="true" className="pill-pulse" />
+          )}
+          <span className="pill-label" title={label}>
+            {label}
+          </span>
+        </>
+      )}
     </div>
   );
 }

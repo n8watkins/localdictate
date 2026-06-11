@@ -434,7 +434,7 @@ export function openModelsFolder(): Promise<void> {
 
 export function transcribeRecording(
   recording: RecordingResult,
-): Promise<DictationResult> {
+): Promise<DictationResult | null> {
   return invoke("transcribe_recording", { recording });
 }
 

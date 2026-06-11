@@ -21,7 +21,13 @@ pub enum AppEvent {
     ValidAudio,
     AudioTooShort,
     TranscriptionSucceeded,
+    /// Whisper finished but produced no text (e.g. a tap with no speech).
+    /// Benign: the app returns to Idle instead of Error.
+    TranscriptionEmpty,
     TranscriptionFailed,
+    /// Stopping the audio stream failed; the recording is gone, so the app
+    /// returns to Idle rather than stranding in Stopping.
+    StopFailed,
     StartPasting,
     PasteCompleted,
     ReadyTimeout,
@@ -107,7 +113,9 @@ impl AppStateMachine {
             (Recording, CancelRecording) => Idle,
             (Stopping, ValidAudio) => Transcribing,
             (Stopping, AudioTooShort) => Idle,
+            (Stopping, StopFailed) => Idle,
             (Transcribing, TranscriptionSucceeded) => Ready,
+            (Transcribing, TranscriptionEmpty) => Idle,
             (Transcribing, TranscriptionFailed) => Error,
             (Ready, StartPasting) => Pasting,
             (Pasting, PasteCompleted) => Ready,
@@ -208,6 +216,55 @@ mod tests {
         assert_eq!(
             machine.transition(AppEvent::AudioTooShort).unwrap().status,
             AppStatus::Idle
+        );
+    }
+
+    #[test]
+    fn empty_transcription_returns_to_idle_without_error() {
+        let mut machine = AppStateMachine::default();
+
+        machine.transition(AppEvent::StartRecording).unwrap();
+        machine.transition(AppEvent::StopRecording).unwrap();
+        machine.transition(AppEvent::ValidAudio).unwrap();
+
+        let snapshot = machine.transition(AppEvent::TranscriptionEmpty).unwrap();
+        assert_eq!(snapshot.status, AppStatus::Idle);
+        assert!(snapshot.error.is_none());
+    }
+
+    #[test]
+    fn stop_failure_returns_to_idle() {
+        let mut machine = AppStateMachine::default();
+
+        machine.transition(AppEvent::StartRecording).unwrap();
+        machine.transition(AppEvent::StopRecording).unwrap();
+
+        let snapshot = machine.transition(AppEvent::StopFailed).unwrap();
+        assert_eq!(snapshot.status, AppStatus::Idle);
+        assert!(snapshot.error.is_none());
+    }
+
+    #[test]
+    fn error_state_recovers_to_idle_and_can_record_again() {
+        let mut machine = AppStateMachine::default();
+
+        machine.transition(AppEvent::StartRecording).unwrap();
+        machine.transition(AppEvent::StopRecording).unwrap();
+        machine.transition(AppEvent::ValidAudio).unwrap();
+        let snapshot = machine.transition(AppEvent::TranscriptionFailed).unwrap();
+        assert_eq!(snapshot.status, AppStatus::Error);
+        assert!(snapshot.error.is_some());
+
+        // The explicit recovery transition used by both the toggle-hotkey
+        // restart and the 5-second Error self-heal timer.
+        let snapshot = machine.transition(AppEvent::ResetError).unwrap();
+        assert_eq!(snapshot.status, AppStatus::Idle);
+        assert!(snapshot.error.is_none());
+
+        // A fresh dictation can start immediately after recovery.
+        assert_eq!(
+            machine.transition(AppEvent::StartRecording).unwrap().status,
+            AppStatus::Recording
         );
     }
 }

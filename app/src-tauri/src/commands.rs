@@ -379,11 +379,14 @@ fn open_folder(app: &tauri::AppHandle, dir: std::path::PathBuf) -> Result<(), Co
         })
 }
 
+/// Returns None (null) when the recording was valid but contained no speech;
+/// the frontend hears about it via "localdictate:dictation-empty" and the
+/// app-state event returning to Idle.
 #[tauri::command]
 pub fn transcribe_recording(
     app: tauri::AppHandle,
     recording: RecordingResult,
-) -> Result<DictationResult, CommandError> {
+) -> Result<Option<DictationResult>, CommandError> {
     dictation::transcribe_recording_for_app(&app, recording)
 }
 

@@ -1,5 +1,11 @@
-use std::{fs, path::PathBuf, time::Instant};
+use std::{
+    fs,
+    path::PathBuf,
+    thread,
+    time::{Duration, Instant},
+};
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -12,9 +18,16 @@ use crate::{
     model_manager, output,
     settings::Language,
     transcript::Transcript,
+    tray,
     whisper::{WhisperRequest, WhisperTranscription},
     whisper_server::WarmTranscriber,
 };
+
+/// How long the app stays in Error before self-healing back to Idle.
+const ERROR_RECOVERY_DELAY: Duration = Duration::from_secs(5);
+
+/// Info-toast message for a dictation that produced no text.
+pub(crate) const EMPTY_DICTATION_MESSAGE: &str = "Nothing heard — no text to insert.";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,10 +46,15 @@ pub struct DictationResult {
     pub transcription_latency_ms: u32,
 }
 
+/// Transcribes a finished recording. Returns Ok(None) when the recording was
+/// valid but Whisper heard nothing (a benign outcome: the app returns to
+/// Idle and "localdictate:dictation-empty" is emitted, no transcript is
+/// saved). On any error, the state machine is never left stranded in
+/// Transcribing: it fails over to Error, which self-heals to Idle.
 pub fn transcribe_recording_for_app(
     app: &AppHandle,
     recording: RecordingResult,
-) -> Result<DictationResult, CommandError> {
+) -> Result<Option<DictationResult>, CommandError> {
     // Take ownership of the incremental session (if any) up front so it is
     // consumed exactly once, whatever happens below. `stopped` anchors the
     // stop-to-final-text latency measurement.
@@ -46,7 +64,24 @@ pub fn transcribe_recording_for_app(
         .incremental()
         .take(&recording.session_id);
 
-    validate_recording_result(&recording)?;
+    let result = transcribe_recording_checked(app, &recording, incremental, stopped);
+    if result.is_err() {
+        // Whatever failed (validation, model lookup, whisper, the database),
+        // a Transcribing state must not be stranded: fail over to Error,
+        // which self-heals back to Idle. No-op when already past
+        // Transcribing.
+        transition_after_failure(app);
+    }
+    result
+}
+
+fn transcribe_recording_checked(
+    app: &AppHandle,
+    recording: &RecordingResult,
+    incremental: Option<SessionHandle>,
+    stopped: Instant,
+) -> Result<Option<DictationResult>, CommandError> {
+    validate_recording_result(recording)?;
     let wav_path = PathBuf::from(recording.wav_path.as_deref().ok_or_else(|| {
         CommandError::new(
             "recording_wav_missing",
@@ -55,7 +90,7 @@ pub fn transcribe_recording_for_app(
     })?);
     let cleanup = WavCleanup::new(wav_path.clone());
 
-    let result = transcribe_recording_inner(app, &recording, wav_path, incremental, stopped);
+    let result = transcribe_recording_inner(app, recording, wav_path, incremental, stopped);
     cleanup.remove();
     result
 }
@@ -66,7 +101,7 @@ fn transcribe_recording_inner(
     wav_path: PathBuf,
     incremental: Option<SessionHandle>,
     stopped: Instant,
-) -> Result<DictationResult, CommandError> {
+) -> Result<Option<DictationResult>, CommandError> {
     let state = app.state::<BackendState>();
     let settings = state.db()?.get_settings()?;
     let (model_id, model_path) = {
@@ -109,7 +144,8 @@ fn transcribe_recording_inner(
                 model_id,
                 error.message
             );
-            transition_after_failure(app);
+            // The Err propagates to transcribe_recording_for_app, which
+            // performs the Transcribing -> Error failover.
             return Err(error);
         }
     };
@@ -121,17 +157,26 @@ fn transcribe_recording_inner(
         whisper_result.latency_ms
     );
 
+    // Empty or whitespace-only text is a benign outcome, not an error (e.g.
+    // the user tapped the toggle hotkey on and immediately off). Both the
+    // incremental path (whose assembled text lands in `whisper_result`, or
+    // which fell back to the full clip) and the full-clip path funnel through
+    // this single check. Nothing is saved; the previous Last Transcript
+    // Buffer is preserved.
     let Some(mut transcript) = Transcript::new_last_buffer(
         whisper_result.text,
         Some(recording.duration_ms.min(u32::MAX as u64) as u32),
         Some(model_id.clone()),
         Some(language),
     ) else {
-        transition_after_failure(app);
-        return Err(CommandError::new(
-            "empty_transcript",
-            "Whisper returned an empty transcript. The previous Last Transcript Buffer was preserved.",
-        ));
+        log::info!(
+            "Transcription empty for session {} (model {}): nothing heard, returning to Idle",
+            recording.session_id,
+            model_id
+        );
+        transition_after_empty(app);
+        emit_dictation_empty(app);
+        return Ok(None);
     };
 
     transcript.output_mode = Some(settings.output_mode.clone());
@@ -156,7 +201,7 @@ fn transcribe_recording_inner(
     if let Err(error) = output::handle_transcription_output(app, &transcript, &settings) {
         output::emit_output_failed(app, transcript.id.clone(), &error);
     }
-    Ok(result)
+    Ok(Some(result))
 }
 
 /// Waits (bounded) for the incremental coordinator's assembled text and turns
@@ -256,6 +301,10 @@ fn transition_after_failure(app: &AppHandle) {
     transition_if_transcribing(app, AppEvent::TranscriptionFailed);
 }
 
+fn transition_after_empty(app: &AppHandle) {
+    transition_if_transcribing(app, AppEvent::TranscriptionEmpty);
+}
+
 fn transition_if_transcribing(app: &AppHandle, event: AppEvent) {
     let state = app.state::<BackendState>();
     let Ok(snapshot) = state.app_state().map(|state| state.snapshot()) else {
@@ -270,7 +319,66 @@ fn transition_if_transcribing(app: &AppHandle, event: AppEvent) {
         return;
     };
 
+    if snapshot.status == AppStatus::Error {
+        // Error must never wedge the app: schedule the return to Idle.
+        schedule_error_recovery(app, snapshot.updated_at);
+    }
+
     emit_state_snapshot(app, &snapshot);
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DictationEmptyPayload {
+    message: String,
+}
+
+/// Tells the frontend that a dictation finished without producing any text,
+/// so it can show a gentle info toast instead of an error.
+pub(crate) fn emit_dictation_empty(app: &AppHandle) {
+    let _ = app.emit(
+        "localdictate:dictation-empty",
+        DictationEmptyPayload {
+            message: EMPTY_DICTATION_MESSAGE.to_string(),
+        },
+    );
+}
+
+/// Self-heals the Error state: after ERROR_RECOVERY_DELAY the app returns to
+/// Idle via the normal ResetError transition and "localdictate:app-state"
+/// event. `entered_at` is the timestamp of the Error snapshot being healed;
+/// when any newer state (even a newer Error) has replaced it, the timer
+/// expires without doing anything, so it can never clobber later activity.
+fn schedule_error_recovery(app: &AppHandle, entered_at: DateTime<Utc>) {
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(ERROR_RECOVERY_DELAY);
+
+        let Some(state) = app.try_state::<BackendState>() else {
+            return;
+        };
+        // Check-and-transition under a single lock so the recovery can never
+        // race a state change that happens between the check and the reset.
+        let snapshot = {
+            let Ok(mut machine) = state.app_state() else {
+                return;
+            };
+            if machine.status() != &AppStatus::Error || machine.snapshot().updated_at != entered_at
+            {
+                return;
+            }
+            let Ok(snapshot) = machine.transition(AppEvent::ResetError) else {
+                return;
+            };
+            snapshot
+        };
+
+        log::info!(
+            "Error state self-healed to Idle after {:?}",
+            ERROR_RECOVERY_DELAY
+        );
+        emit_state_snapshot(&app, &snapshot);
+        tray::update_tray_status(&app, snapshot.status.clone());
+    });
 }
 
 fn emit_state_snapshot(app: &AppHandle, snapshot: &AppStateSnapshot) {

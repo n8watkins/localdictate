@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped whenever a shipped default changes in a way that should be applied
 /// once to existing installs (see `migrate_defaults`). Stored settings with a
 /// lower `defaults_version` get the new defaults applied exactly once.
-pub const CURRENT_DEFAULTS_VERSION: u32 = 2;
+pub const CURRENT_DEFAULTS_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,10 +112,10 @@ pub struct HotkeySettings {
 impl Default for HotkeySettings {
     fn default() -> Self {
         Self {
-            hold_to_talk: "Ctrl+Shift".to_string(),
+            hold_to_talk: "Ctrl+Win".to_string(),
             toggle_dictation: "Backquote".to_string(),
-            paste_last_transcript: "Ctrl+Alt+V".to_string(),
-            open_dashboard: "Ctrl+Alt+D".to_string(),
+            paste_last_transcript: "Ctrl+Shift+V".to_string(),
+            open_dashboard: "Ctrl+Alt+V".to_string(),
         }
     }
 }
@@ -198,6 +198,18 @@ impl AppSettings {
         // default, so installs that still have it on never chose it.
         if self.defaults_version < 2 && self.silence_auto_stop_enabled {
             self.silence_auto_stop_enabled = false;
+        }
+
+        // v3: default binds changed (Ctrl+Win hold, Ctrl+Shift+V paste,
+        // Ctrl+Alt+V dashboard). Only installs still on the exact v2 default
+        // set are moved; customized binds are never touched.
+        if self.defaults_version < 3
+            && self.hotkeys.hold_to_talk == "Ctrl+Shift"
+            && self.hotkeys.toggle_dictation == "Backquote"
+            && self.hotkeys.paste_last_transcript == "Ctrl+Alt+V"
+            && self.hotkeys.open_dashboard == "Ctrl+Alt+D"
+        {
+            self.hotkeys = HotkeySettings::default();
         }
 
         self.defaults_version = CURRENT_DEFAULTS_VERSION;
@@ -403,10 +415,47 @@ mod tests {
     fn default_hotkeys_avoid_windows_reserved_shortcuts() {
         let hotkeys = HotkeySettings::default();
 
-        assert_eq!(hotkeys.hold_to_talk, "Ctrl+Shift");
+        assert_eq!(hotkeys.hold_to_talk, "Ctrl+Win");
         assert_eq!(hotkeys.toggle_dictation, "Backquote");
-        assert_eq!(hotkeys.paste_last_transcript, "Ctrl+Alt+V");
-        assert_eq!(hotkeys.open_dashboard, "Ctrl+Alt+D");
+        assert_eq!(hotkeys.paste_last_transcript, "Ctrl+Shift+V");
+        assert_eq!(hotkeys.open_dashboard, "Ctrl+Alt+V");
+    }
+
+    #[test]
+    fn migrates_v2_default_hotkeys_to_v3_once() {
+        let mut settings = AppSettings {
+            defaults_version: 2,
+            hotkeys: HotkeySettings {
+                hold_to_talk: "Ctrl+Shift".to_string(),
+                toggle_dictation: "Backquote".to_string(),
+                paste_last_transcript: "Ctrl+Alt+V".to_string(),
+                open_dashboard: "Ctrl+Alt+D".to_string(),
+            },
+            ..AppSettings::default()
+        };
+
+        assert!(settings.migrate_defaults());
+        assert_eq!(settings.hotkeys, HotkeySettings::default());
+        assert_eq!(settings.defaults_version, CURRENT_DEFAULTS_VERSION);
+    }
+
+    #[test]
+    fn does_not_migrate_customized_hotkeys_to_v3() {
+        let mut settings = AppSettings {
+            defaults_version: 2,
+            hotkeys: HotkeySettings {
+                hold_to_talk: "Ctrl+Shift".to_string(),
+                toggle_dictation: "F9".to_string(),
+                paste_last_transcript: "Ctrl+Alt+V".to_string(),
+                open_dashboard: "Ctrl+Alt+D".to_string(),
+            },
+            ..AppSettings::default()
+        };
+
+        assert!(settings.migrate_defaults());
+        assert_eq!(settings.hotkeys.toggle_dictation, "F9");
+        assert_eq!(settings.hotkeys.hold_to_talk, "Ctrl+Shift");
+        assert_eq!(settings.defaults_version, CURRENT_DEFAULTS_VERSION);
     }
 
     #[test]

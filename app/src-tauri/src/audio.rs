@@ -598,17 +598,31 @@ fn stop_recording_with_reason(
         emit_state_snapshot(app, &snapshot);
     }
 
-    let result = if let Some(session_id) = session_id {
+    let no_active_session =
+        || CommandError::new("recording_not_active", "No active recording session.");
+    let stop_result = if let Some(session_id) = session_id {
         state
             .audio()?
-            .stop_session(session_id, reason)?
-            .ok_or_else(|| {
-                CommandError::new("recording_not_active", "No active recording session.")
-            })?
+            .stop_session(session_id, reason)
+            .and_then(|result| result.ok_or_else(no_active_session))
     } else {
-        state.audio()?.stop(reason)?.ok_or_else(|| {
-            CommandError::new("recording_not_active", "No active recording session.")
-        })?
+        state
+            .audio()?
+            .stop(reason)
+            .and_then(|result| result.ok_or_else(no_active_session))
+    };
+    let result = match stop_result {
+        Ok(result) => result,
+        Err(error) => {
+            // The recording is gone either way: never strand the state
+            // machine in Stopping (where the toggle hotkey would be a
+            // no-op). Land back on Idle and surface the error to the caller.
+            if state.app_state()?.snapshot().status == AppStatus::Stopping {
+                let snapshot = state.transition_app_state(AppEvent::StopFailed)?;
+                emit_state_snapshot(app, &snapshot);
+            }
+            return Err(error);
+        }
     };
 
     log::info!(
