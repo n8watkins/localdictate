@@ -12,6 +12,7 @@ use crate::{
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
+const AUDIO_CLIPS_MIGRATION: &str = include_str!("../migrations/002_audio_clips.sql");
 const SETTINGS_KEY: &str = "app_settings";
 const LAST_TRANSCRIPT_ID_KEY: &str = "last_transcript_id";
 const LAST_TRANSCRIPT_BUFFER_KEY: &str = "last_transcript_buffer";
@@ -23,16 +24,14 @@ pub struct Database {
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CommandError> {
         let conn = Connection::open(path).map_err(CommandError::database)?;
-        conn.execute_batch(INITIAL_MIGRATION)
-            .map_err(CommandError::database)?;
+        apply_migrations(&conn)?;
         Ok(Self { conn })
     }
 
     #[cfg(test)]
     pub fn in_memory() -> Result<Self, CommandError> {
         let conn = Connection::open_in_memory().map_err(CommandError::database)?;
-        conn.execute_batch(INITIAL_MIGRATION)
-            .map_err(CommandError::database)?;
+        apply_migrations(&conn)?;
         Ok(Self { conn })
     }
 
@@ -71,7 +70,8 @@ impl Database {
             .conn
             .prepare(
                 "SELECT id, text, created_at, duration_ms, word_count, character_count,
-                        model_id, language, output_mode, paste_method, transcription_latency_ms
+                        model_id, language, output_mode, paste_method, transcription_latency_ms,
+                        audio_path
                  FROM transcripts
                  ORDER BY created_at DESC
                  LIMIT ?1",
@@ -111,7 +111,8 @@ impl Database {
                 .conn
                 .prepare(
                     "SELECT id, text, created_at, duration_ms, word_count, character_count,
-                            model_id, language, output_mode, paste_method, transcription_latency_ms
+                            model_id, language, output_mode, paste_method, transcription_latency_ms,
+                            audio_path
                      FROM transcripts
                      WHERE text LIKE ?1 ESCAPE '\\'
                      ORDER BY created_at DESC
@@ -138,7 +139,8 @@ impl Database {
                 .conn
                 .prepare(
                     "SELECT id, text, created_at, duration_ms, word_count, character_count,
-                            model_id, language, output_mode, paste_method, transcription_latency_ms
+                            model_id, language, output_mode, paste_method, transcription_latency_ms,
+                            audio_path
                      FROM transcripts
                      ORDER BY created_at DESC
                      LIMIT ?1 OFFSET ?2",
@@ -184,8 +186,32 @@ impl Database {
     }
 
     pub fn clear_last_transcript(&self) -> Result<(), CommandError> {
+        self.remove_buffer_only_clip()?;
         self.upsert_setting(LAST_TRANSCRIPT_BUFFER_KEY, "")?;
         self.upsert_setting(LAST_TRANSCRIPT_ID_KEY, "")?;
+        Ok(())
+    }
+
+    /// A clip referenced only by the Last Transcript Buffer (its dictation
+    /// was never written to history) has no other owner, so it must be
+    /// removed before the buffer stops referencing it. Clips that also live
+    /// in the transcripts table are left for the history deletion paths.
+    fn remove_buffer_only_clip(&self) -> Result<(), CommandError> {
+        let Some(value) = self.get_setting_value(LAST_TRANSCRIPT_BUFFER_KEY)? else {
+            return Ok(());
+        };
+        if value.trim().is_empty() {
+            return Ok(());
+        }
+        let Ok(buffer) = serde_json::from_str::<Transcript>(&value) else {
+            return Ok(());
+        };
+        let Some(path) = buffer.audio_path else {
+            return Ok(());
+        };
+        if self.get_transcript_by_id(&buffer.id)?.is_none() {
+            remove_clip_files([path]);
+        }
         Ok(())
     }
 
@@ -203,6 +229,7 @@ impl Database {
             return Ok(());
         }
 
+        self.remove_buffer_only_clip()?;
         self.upsert_setting(
             LAST_TRANSCRIPT_BUFFER_KEY,
             &serde_json::to_string(transcript)?,
@@ -361,8 +388,9 @@ impl Database {
             .execute(
                 "INSERT OR REPLACE INTO transcripts (
                     id, text, created_at, duration_ms, word_count, character_count,
-                    model_id, language, output_mode, paste_method, transcription_latency_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    model_id, language, output_mode, paste_method, transcription_latency_ms,
+                    audio_path
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     transcript.id,
                     transcript.text,
@@ -375,6 +403,7 @@ impl Database {
                     transcript.output_mode.as_ref().map(enum_to_json_string),
                     transcript.paste_method.as_ref().map(enum_to_json_string),
                     transcript.transcription_latency_ms,
+                    transcript.audio_path,
                 ],
             )
             .map_err(CommandError::database)?;
@@ -386,7 +415,8 @@ impl Database {
         self.conn
             .query_row(
                 "SELECT id, text, created_at, duration_ms, word_count, character_count,
-                        model_id, language, output_mode, paste_method, transcription_latency_ms
+                        model_id, language, output_mode, paste_method, transcription_latency_ms,
+                        audio_path
                  FROM transcripts
                  WHERE id = ?1",
                 [id],
@@ -432,16 +462,26 @@ impl Database {
     }
 
     pub fn delete_transcript(&self, id: &str) -> Result<(), CommandError> {
+        let clips = self.clip_paths(
+            "SELECT audio_path FROM transcripts WHERE id = ?1 AND audio_path IS NOT NULL",
+            [id],
+        )?;
         self.conn
             .execute("DELETE FROM transcripts WHERE id = ?1", [id])
             .map_err(CommandError::database)?;
+        remove_clip_files(clips);
         Ok(())
     }
 
     pub fn clear_transcript_history(&self) -> Result<(), CommandError> {
+        let clips = self.clip_paths(
+            "SELECT audio_path FROM transcripts WHERE audio_path IS NOT NULL",
+            [],
+        )?;
         self.conn
             .execute("DELETE FROM transcripts", [])
             .map_err(CommandError::database)?;
+        remove_clip_files(clips);
         Ok(())
     }
 
@@ -453,14 +493,31 @@ impl Database {
             return Ok(());
         };
 
-        let cutoff = Utc::now() - chrono::Duration::days(i64::from(retention_days));
+        let cutoff = (Utc::now() - chrono::Duration::days(i64::from(retention_days))).to_rfc3339();
+        let clips = self.clip_paths(
+            "SELECT audio_path FROM transcripts WHERE created_at < ?1 AND audio_path IS NOT NULL",
+            [&cutoff],
+        )?;
         self.conn
-            .execute(
-                "DELETE FROM transcripts WHERE created_at < ?1",
-                [cutoff.to_rfc3339()],
-            )
+            .execute("DELETE FROM transcripts WHERE created_at < ?1", [&cutoff])
             .map_err(CommandError::database)?;
+        remove_clip_files(clips);
         Ok(())
+    }
+
+    /// Audio-clip paths matched by `sql` (which must select exactly the
+    /// audio_path column), collected before their rows are deleted.
+    fn clip_paths<P: rusqlite::Params>(
+        &self,
+        sql: &str,
+        params: P,
+    ) -> Result<Vec<String>, CommandError> {
+        let mut stmt = self.conn.prepare(sql).map_err(CommandError::database)?;
+        let rows = stmt
+            .query_map(params, |row| row.get(0))
+            .map_err(CommandError::database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(CommandError::database)
     }
 
     fn get_setting_value(&self, key: &str) -> Result<Option<String>, CommandError> {
@@ -488,6 +545,27 @@ impl Database {
     }
 }
 
+fn apply_migrations(conn: &Connection) -> Result<(), CommandError> {
+    conn.execute_batch(INITIAL_MIGRATION)
+        .map_err(CommandError::database)?;
+    // SQLite has no ADD COLUMN IF NOT EXISTS: a duplicate-column error means
+    // the migration already ran on this database.
+    if let Err(error) = conn.execute_batch(AUDIO_CLIPS_MIGRATION) {
+        if !error.to_string().contains("duplicate column name") {
+            return Err(CommandError::database(error));
+        }
+    }
+    Ok(())
+}
+
+/// Removes saved clip files for transcripts that are being deleted. A clip
+/// that is already gone is not an error.
+fn remove_clip_files(paths: impl IntoIterator<Item = String>) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn transcript_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transcript> {
     let created_at: String = row.get(2)?;
 
@@ -511,6 +589,7 @@ fn transcript_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transcript> 
         output_mode: optional_enum_from_json(row.get(8)?),
         paste_method: optional_enum_from_json(row.get(9)?),
         transcription_latency_ms: row.get(10)?,
+        audio_path: row.get(11)?,
     })
 }
 
@@ -587,6 +666,37 @@ mod tests {
             Some("en".to_string()),
         )
         .unwrap()
+    }
+
+    /// A transcript plus a real on-disk clip file (the transcript id keeps
+    /// the path unique across parallel tests).
+    fn transcript_with_clip(text: &str) -> (Transcript, std::path::PathBuf) {
+        let mut transcript = transcript_with_text(text);
+        let clip_path = std::env::temp_dir().join(format!("{}.wav", transcript.id));
+        std::fs::write(&clip_path, b"RIFF").unwrap();
+        transcript.audio_path = Some(clip_path.to_string_lossy().into_owned());
+        (transcript, clip_path)
+    }
+
+    #[test]
+    fn migration_adds_audio_path_to_existing_databases() {
+        let path = std::env::temp_dir().join(format!(
+            "localdictate_migration_{}.sqlite3",
+            uuid::Uuid::new_v4().simple()
+        ));
+        {
+            // A database created before saved clips: 001 only, no audio_path.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(INITIAL_MIGRATION).unwrap();
+        }
+
+        // The first open adds the column; the second tolerates it existing.
+        for _ in 0..2 {
+            let db = Database::open(&path).unwrap();
+            assert!(db.list_recent_transcripts(1).unwrap().is_empty());
+        }
+
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -707,6 +817,113 @@ mod tests {
         assert_eq!(result.total, 1);
         assert_eq!(result.transcripts[0].id, recent.id);
         assert_eq!(db.get_last_transcript().unwrap().unwrap().id, recent.id);
+    }
+
+    #[test]
+    fn audio_path_round_trips_through_history_and_buffer() {
+        let db = Database::in_memory().unwrap();
+        let mut transcript = transcript_with_text("clip backed transcript");
+        transcript.audio_path = Some("C:\\clips\\tx_1.wav".to_string());
+
+        db.save_last_transcript(&transcript).unwrap();
+
+        assert_eq!(
+            db.get_transcript_by_id(&transcript.id)
+                .unwrap()
+                .unwrap()
+                .audio_path
+                .as_deref(),
+            Some("C:\\clips\\tx_1.wav")
+        );
+        assert_eq!(
+            db.get_last_transcript().unwrap().unwrap().audio_path,
+            transcript.audio_path
+        );
+    }
+
+    #[test]
+    fn delete_transcript_removes_clip_file() {
+        let db = Database::in_memory().unwrap();
+        let (transcript, clip_path) = transcript_with_clip("clip to delete");
+
+        db.save_last_transcript(&transcript).unwrap();
+        assert!(clip_path.exists());
+
+        db.delete_transcript(&transcript.id).unwrap();
+        assert!(!clip_path.exists());
+
+        // Deleting again (the clip is already gone) must not error.
+        db.delete_transcript(&transcript.id).unwrap();
+    }
+
+    #[test]
+    fn clear_history_removes_clip_files() {
+        let db = Database::in_memory().unwrap();
+        let (first, first_clip) = transcript_with_clip("first clip");
+        let (second, second_clip) = transcript_with_clip("second clip");
+
+        db.save_last_transcript(&first).unwrap();
+        db.save_last_transcript(&second).unwrap();
+
+        db.clear_transcript_history().unwrap();
+
+        assert!(!first_clip.exists());
+        assert!(!second_clip.exists());
+    }
+
+    #[test]
+    fn retention_removes_clip_files_of_purged_rows() {
+        let db = Database::in_memory().unwrap();
+        let (old, old_clip) = transcript_with_clip("old clip");
+        let (recent, recent_clip) = transcript_with_clip("recent clip");
+
+        db.save_last_transcript(&old).unwrap();
+        db.conn
+            .execute(
+                "UPDATE transcripts SET created_at = ?2 WHERE id = ?1",
+                params![old.id, (Utc::now() - Duration::days(45)).to_rfc3339()],
+            )
+            .unwrap();
+        db.save_last_transcript(&recent).unwrap();
+
+        db.enforce_history_retention(Some(30)).unwrap();
+
+        assert!(!old_clip.exists());
+        assert!(recent_clip.exists());
+        std::fs::remove_file(recent_clip).unwrap();
+    }
+
+    #[test]
+    fn buffer_only_clip_is_removed_when_buffer_is_replaced_or_cleared() {
+        let db = Database::in_memory().unwrap();
+        let (first, first_clip) = transcript_with_clip("buffer only clip");
+        let (second, second_clip) = transcript_with_clip("replacement clip");
+
+        // History disabled: the clip's only owner is the buffer, so
+        // replacing the buffer must remove it.
+        db.save_last_transcript_with_history(&first, false).unwrap();
+        db.save_last_transcript_with_history(&second, false)
+            .unwrap();
+        assert!(!first_clip.exists());
+        assert!(second_clip.exists());
+
+        db.clear_last_transcript().unwrap();
+        assert!(!second_clip.exists());
+    }
+
+    #[test]
+    fn history_owned_clip_survives_buffer_replacement() {
+        let db = Database::in_memory().unwrap();
+        let (first, first_clip) = transcript_with_clip("history owned clip");
+        let second = transcript_with_text("next dictation");
+
+        db.save_last_transcript(&first).unwrap();
+        db.save_last_transcript(&second).unwrap();
+
+        // The clip belongs to the history row; only its deletion removes it.
+        assert!(first_clip.exists());
+        db.delete_transcript(&first.id).unwrap();
+        assert!(!first_clip.exists());
     }
 
     #[test]

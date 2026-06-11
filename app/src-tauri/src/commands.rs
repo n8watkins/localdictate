@@ -220,6 +220,38 @@ pub fn clear_transcript_history(state: tauri::State<'_, BackendState>) -> Result
     state.db()?.clear_transcript_history()
 }
 
+/// Returns a transcript's saved audio clip as a base64 WAV string for
+/// in-app playback. Errors with code "transcript_audio_missing" when the
+/// transcript has no clip or the file is gone.
+#[tauri::command]
+pub fn get_transcript_audio(
+    state: tauri::State<'_, BackendState>,
+    id: String,
+) -> Result<String, CommandError> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let db = state.db()?;
+    let transcript = match db.get_transcript_by_id(&id)? {
+        Some(transcript) => Some(transcript),
+        // With history disabled the dictation only lives in the Last
+        // Transcript Buffer, which can still carry a clip.
+        None => db.get_last_transcript()?.filter(|last| last.id == id),
+    };
+
+    let path = transcript
+        .and_then(|transcript| transcript.audio_path)
+        .ok_or_else(transcript_audio_missing)?;
+    let bytes = std::fs::read(&path).map_err(|_| transcript_audio_missing())?;
+    Ok(STANDARD.encode(bytes))
+}
+
+fn transcript_audio_missing() -> CommandError {
+    CommandError::new(
+        "transcript_audio_missing",
+        "No audio clip is available for this transcript. It may have been deleted, or the dictation was recorded while clip saving was off.",
+    )
+}
+
 #[tauri::command]
 pub fn get_basic_stats(state: tauri::State<'_, BackendState>) -> Result<BasicStats, CommandError> {
     state.db()?.get_basic_stats()

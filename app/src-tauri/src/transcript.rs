@@ -18,6 +18,11 @@ pub struct Transcript {
     pub output_mode: Option<OutputMode>,
     pub paste_method: Option<PasteMethod>,
     pub transcription_latency_ms: Option<u32>,
+    /// Absolute path of the saved audio clip. None when clip saving is off
+    /// or the transcript predates saved clips; the default keeps persisted
+    /// pre-clip JSON (e.g. the Last Transcript Buffer) deserializing.
+    #[serde(default)]
+    pub audio_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +66,7 @@ impl Transcript {
             output_mode: None,
             paste_method: None,
             transcription_latency_ms: None,
+            audio_path: None,
         })
     }
 }
@@ -92,6 +98,37 @@ mod tests {
         assert!(Transcript::new_last_buffer("", Some(1000), None, None).is_none());
         assert!(Transcript::new_last_buffer("   ", Some(1000), None, None).is_none());
         assert!(Transcript::new_last_buffer("\n\t \r\n", Some(1000), None, None).is_none());
+    }
+
+    #[test]
+    fn audio_path_defaults_to_none_for_pre_clip_json() {
+        // Buffer JSON persisted before saved clips existed has no audioPath
+        // key and must keep deserializing.
+        let json = r#"{
+            "id": "tx_legacy",
+            "text": "hello",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "durationMs": 1000,
+            "wordCount": 1,
+            "characterCount": 5,
+            "modelId": null,
+            "language": "en",
+            "outputMode": null,
+            "pasteMethod": null,
+            "transcriptionLatencyMs": null
+        }"#;
+
+        let transcript: Transcript = serde_json::from_str(json).unwrap();
+        assert_eq!(transcript.audio_path, None);
+    }
+
+    #[test]
+    fn audio_path_serializes_as_camel_case() {
+        let mut transcript = Transcript::new_last_buffer("hello", None, None, None).unwrap();
+        transcript.audio_path = Some("C:\\clips\\tx_1.wav".to_string());
+
+        let json = serde_json::to_value(&transcript).unwrap();
+        assert_eq!(json["audioPath"], "C:\\clips\\tx_1.wav");
     }
 
     #[test]

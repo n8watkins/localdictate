@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -127,7 +127,7 @@ fn transcribe_recording_inner(
                 app,
                 WhisperRequest {
                     model_path,
-                    wav_path,
+                    wav_path: wav_path.clone(),
                     language: language.clone(),
                     vocabulary_prompt: settings.vocabulary_prompt.clone(),
                 },
@@ -183,9 +183,32 @@ fn transcribe_recording_inner(
     transcript.paste_method = Some(settings.paste_method.clone());
     transcript.transcription_latency_ms = Some(whisper_result.latency_ms);
 
-    state
-        .db()?
-        .save_last_transcript_with_history(&transcript, settings.history_enabled)?;
+    // Claim the recording WAV before WavCleanup runs: the move removes the
+    // source, so the cleanup's remove becomes a no-op. A clip failure must
+    // never fail the dictation itself.
+    if settings.save_audio_clips {
+        match save_audio_clip(app, &wav_path, &transcript.id) {
+            Ok(clip_path) => {
+                transcript.audio_path = Some(clip_path.to_string_lossy().into_owned())
+            }
+            Err(error) => log::warn!(
+                "Could not save audio clip for transcript {}: {}",
+                transcript.id,
+                error.message
+            ),
+        }
+    }
+
+    let save_result = state
+        .db()
+        .and_then(|db| db.save_last_transcript_with_history(&transcript, settings.history_enabled));
+    if let Err(error) = save_result {
+        // A clip whose transcript was never saved would be orphaned forever.
+        if let Some(path) = transcript.audio_path.as_deref() {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
     transition_after_success(app);
 
     let result = DictationResult {
@@ -385,6 +408,54 @@ fn emit_state_snapshot(app: &AppHandle, snapshot: &AppStateSnapshot) {
     let _ = app.emit("localdictate:app-state", snapshot);
 }
 
+/// Permanent home of saved dictation clips: app_data_dir/clips/{id}.wav.
+fn clips_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
+    let dir = app.path().app_data_dir().map_err(|error| {
+        CommandError::new(
+            "app_data_dir_unavailable",
+            format!(
+                "Could not locate LocalDictate app data directory. {}",
+                error
+            ),
+        )
+    })?;
+    Ok(dir.join("clips"))
+}
+
+/// Moves the finished recording WAV into the clips directory. fs::rename
+/// cannot cross volumes (the recording temp dir may live on a different one
+/// than app data), so it falls back to copy + delete.
+fn save_audio_clip(
+    app: &AppHandle,
+    wav_path: &Path,
+    transcript_id: &str,
+) -> Result<PathBuf, CommandError> {
+    let dir = clips_dir(app)?;
+    fs::create_dir_all(&dir).map_err(|error| {
+        CommandError::new(
+            "audio_clip_save_failed",
+            format!("Could not create clips folder {}. {}", dir.display(), error),
+        )
+    })?;
+
+    let target = dir.join(format!("{}.wav", transcript_id));
+    if fs::rename(wav_path, &target).is_err() {
+        fs::copy(wav_path, &target).map_err(|error| {
+            CommandError::new(
+                "audio_clip_save_failed",
+                format!("Could not save audio clip {}. {}", target.display(), error),
+            )
+        })?;
+        // The source delete may fail (e.g. a lingering handle); WavCleanup
+        // retries it right after.
+        let _ = fs::remove_file(wav_path);
+    }
+    Ok(target)
+}
+
+/// Deletes the temp recording WAV once transcription is done. When the
+/// success path saved the WAV as a clip, the move already consumed the
+/// source and this remove is a harmless no-op.
 struct WavCleanup {
     path: PathBuf,
 }

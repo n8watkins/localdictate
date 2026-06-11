@@ -164,6 +164,7 @@ pub fn run() {
             commands::update_transcript,
             commands::delete_transcript,
             commands::clear_transcript_history,
+            commands::get_transcript_audio,
             commands::get_basic_stats,
             commands::refresh_basic_stats,
             commands::get_hotkey_status,
