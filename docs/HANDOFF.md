@@ -115,7 +115,9 @@ and hasn't yet dictated a non-silent note (empty notes are never saved).
   `npm run tauri build` REQUIRE a signing key. CI uses the
   `TAURI_SIGNING_PRIVATE_KEY` repo secret (set 2026-06-12, passwordless);
   manual Windows builds need
-  `set TAURI_SIGNING_PRIVATE_KEY_PATH=C:\Users\natha\.tauri\localdictate-updater.key`.
+  `set TAURI_SIGNING_PRIVATE_KEY=C:\Users\natha\.tauri\localdictate-updater.key`
+  (v2 accepts a path or the key content in that one variable — there is NO
+  `_PATH` variant; using one fails with "no private key" after bundling).
   The key also lives at `~/.tauri/localdictate-updater.key` in WSL. Losing
   it breaks updates for all shipped builds. Dev-flavor builds are
   `--no-bundle`, so they never need the key.
