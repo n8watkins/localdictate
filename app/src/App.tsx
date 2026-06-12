@@ -1799,7 +1799,9 @@ function GoogleDrivePanel({
     void reloadStatus();
   }, [reloadStatus]);
 
-  const signedIn = settings.driveAccountEmail.trim().length > 0;
+  // Source of truth is a stored token (status.signedIn), not the email —
+  // the email can be blank on tokens granted before the email scope.
+  const signedIn = status?.signedIn ?? false;
 
   const handleSignIn = useCallback(async () => {
     setBusy(true);
@@ -1885,7 +1887,9 @@ function GoogleDrivePanel({
             label="Connected account"
           >
             <div className="setting-control">
-              <span className="pill preserve">{settings.driveAccountEmail}</span>
+              <span className="pill preserve">
+                {settings.driveAccountEmail || status?.email || "Signed in"}
+              </span>
               <button
                 className="secondary-button"
                 disabled={busy}

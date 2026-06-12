@@ -488,7 +488,9 @@ pub fn google_status(
     let service = app.config().identifier.clone();
     Ok(GoogleStatus {
         configured: crate::google_oauth::is_configured(),
-        signed_in: !email.is_empty() && crate::google_oauth::has_stored_token(&service),
+        // A stored refresh token is the source of truth for "signed in"; the
+        // email is just for display and may be empty on older tokens.
+        signed_in: crate::google_oauth::has_stored_token(&service),
         email,
     })
 }

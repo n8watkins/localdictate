@@ -31,13 +31,13 @@ use crate::google_secrets::{CLIENT_ID, CLIENT_SECRET};
 
 const AUTH_URI: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
-/// Least privilege: app-created files only. Also keeps us out of Google's
-/// restricted-scope security assessment.
-const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
-/// Drive's `about` resource returns the signed-in user (incl. email) and is
-/// reachable with `drive.file` alone, so we learn the email without asking for
-/// an extra `email`/`openid` scope.
-const ABOUT_URI: &str = "https://www.googleapis.com/drive/v3/about?fields=user";
+/// `drive.file` = app-created files only (least privilege; keeps us out of
+/// Google's restricted-scope assessment). `openid email` lets us show which
+/// account is connected — `drive.file` alone does NOT expose the email.
+const SCOPE: &str = "https://www.googleapis.com/auth/drive.file openid email";
+/// OpenID Connect userinfo endpoint: returns the signed-in account's email
+/// (requires the `email` scope above).
+const USERINFO_URI: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 
 /// Username component of the keychain entry. The service component is the app's
 /// bundle identifier (passed in) so the Dev flavor and stable keep separate
@@ -215,7 +215,7 @@ fn post_token(body: &str) -> Result<TokenResponse, CommandError> {
 fn fetch_email(access_token: &str) -> Result<String, CommandError> {
     let client = http_client()?;
     let text = client
-        .get(ABOUT_URI)
+        .get(USERINFO_URI)
         .timeout(TOKEN_TIMEOUT)
         .header("Authorization", format!("Bearer {access_token}"))
         .send()
@@ -226,8 +226,7 @@ fn fetch_email(access_token: &str) -> Result<String, CommandError> {
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|error| failure(error.to_string()))?;
     Ok(json
-        .get("user")
-        .and_then(|user| user.get("emailAddress"))
+        .get("email")
         .and_then(|value| value.as_str())
         .unwrap_or_default()
         .to_string())
