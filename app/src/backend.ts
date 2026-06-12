@@ -64,6 +64,10 @@ export type AppSettings = {
   historyEnabled: boolean;
   saveAudioClips: boolean;
   historyRetentionDays: HistoryRetentionDays;
+  notesAnalysisEnabled: boolean;
+  notesAnalysisPrompt: string;
+  notesAnalysisEndpoint: string;
+  notesAnalysisModel: string;
   hotkeys: HotkeySettings;
   pillX: number | null;
   pillY: number | null;
@@ -83,6 +87,9 @@ export type Transcript = {
   transcriptionLatencyMs: number | null;
   audioPath: string | null;
   isNote: boolean;
+  analysis: string | null;
+  analysisModel: string | null;
+  analysisCreatedAt: string | null;
 };
 
 export type TranscriptSearchResult = {
@@ -478,6 +485,12 @@ export type UpdateCheckResult = {
 
 export function checkForUpdate(): Promise<UpdateCheckResult> {
   return invoke("check_for_update");
+}
+
+/** Runs the notes-analysis prompt over a transcript via the configured
+ * local LLM server; returns the transcript with its stored analysis. */
+export function analyzeNote(transcriptId: string): Promise<Transcript> {
+  return invoke("analyze_note", { transcriptId });
 }
 
 export function openReleasePage(url?: string): Promise<void> {

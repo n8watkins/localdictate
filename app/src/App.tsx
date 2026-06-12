@@ -29,11 +29,13 @@ import {
   Settings as SettingsIcon,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Square,
   Trash2,
   type LucideIcon,
 } from "lucide-react";
 import {
+  analyzeNote,
   clearLastTranscript,
   clearTranscriptHistory,
   commandErrorMessage,
@@ -1269,6 +1271,23 @@ function HistoryView({
     [playingId, stopPlayback],
   );
 
+  const handleAnalyzeNote = useCallback(async (id: string) => {
+    setBusyTranscriptId(id);
+    setHistoryError(null);
+
+    try {
+      const updated = await analyzeNote(id);
+      // The row already holds the fresh analysis; no full reload needed.
+      setTranscripts((previous) =>
+        previous.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    } catch (error) {
+      setHistoryError(commandErrorMessage(error));
+    } finally {
+      setBusyTranscriptId(null);
+    }
+  }, []);
+
   const handleDeleteTranscript = useCallback(
     async (id: string) => {
       if (!window.confirm("Delete this transcript from local history?")) {
@@ -1377,6 +1396,11 @@ function HistoryView({
                 busy={busyTranscriptId === item.id}
                 item={item}
                 key={item.id}
+                onAnalyze={
+                  notesOnly && settings.notesAnalysisEnabled
+                    ? handleAnalyzeNote
+                    : undefined
+                }
                 onCopy={handleCopyTranscript}
                 onDelete={handleDeleteTranscript}
                 onPaste={handlePasteTranscript}
@@ -1587,22 +1611,137 @@ function SettingsView({
           Names and jargon Whisper should expect, e.g. "Tauri, natkins,
           whisper.cpp". Improves recognition of unusual words.
         </p>
-        <VocabularyField
+        <BlurSavedTextArea
+          ariaLabel="Custom vocabulary"
           onSave={(vocabularyPrompt) =>
             actions.updateSettings({ vocabularyPrompt })
           }
+          placeholder="Tauri, natkins, whisper.cpp"
           value={settings.vocabularyPrompt}
+        />
+      </SectionPanel>
+
+      <SectionPanel
+        icon={<Sparkles aria-hidden="true" size={16} />}
+        title="Notes analysis"
+      >
+        <SettingRow
+          description="Analyze notes on demand from the Notes view using a local LLM server (LM Studio, Ollama, or any OpenAI-compatible API). Nothing leaves this machine."
+          label="Analyze notes with a local LLM"
+        >
+          <Toggle
+            checked={settings.notesAnalysisEnabled}
+            disabled={actions.savingSettings}
+            label="Analyze notes with a local LLM"
+            onChange={(notesAnalysisEnabled) =>
+              actions.updateSettings({ notesAnalysisEnabled })
+            }
+          />
+        </SettingRow>
+        <SettingRow
+          description="Base URL of the local server's OpenAI-compatible API. LM Studio's default is http://127.0.0.1:1234/v1."
+          label="Server endpoint"
+        >
+          <BlurSavedInput
+            ariaLabel="Notes analysis server endpoint"
+            onSave={(notesAnalysisEndpoint) =>
+              actions.updateSettings({ notesAnalysisEndpoint })
+            }
+            placeholder="http://127.0.0.1:1234/v1"
+            value={settings.notesAnalysisEndpoint}
+          />
+        </SettingRow>
+        <SettingRow
+          description="Leave empty to use whatever model the server has loaded."
+          label="Model"
+        >
+          <BlurSavedInput
+            ariaLabel="Notes analysis model"
+            onSave={(notesAnalysisModel) =>
+              actions.updateSettings({ notesAnalysisModel })
+            }
+            placeholder="Loaded model (automatic)"
+            value={settings.notesAnalysisModel}
+          />
+        </SettingRow>
+        <p className="muted vocab-hint">
+          Analysis prompt — the note text is sent along with this instruction,
+          so it alone decides what analysis produces (summary, action items,
+          tags, ...).
+        </p>
+        <BlurSavedTextArea
+          ariaLabel="Notes analysis prompt"
+          onSave={(notesAnalysisPrompt) =>
+            actions.updateSettings({ notesAnalysisPrompt })
+          }
+          placeholder="Summarize this dictated note..."
+          rows={4}
+          value={settings.notesAnalysisPrompt}
         />
       </SectionPanel>
     </section>
   );
 }
 
-function VocabularyField({
+/** Single-line text setting that saves on blur (and on unmount, like the
+ * vocabulary field) so every keystroke does not hit the settings command. */
+function BlurSavedInput({
+  ariaLabel,
   onSave,
+  placeholder,
   value,
 }: {
-  onSave: (vocabularyPrompt: string) => void;
+  ariaLabel: string;
+  onSave: (value: string) => void;
+  placeholder?: string;
+  value: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const latestRef = useRef({ draft, onSave, value });
+  latestRef.current = { draft, onSave, value };
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  useEffect(
+    () => () => {
+      const latest = latestRef.current;
+      if (latest.draft !== latest.value) {
+        latest.onSave(latest.draft);
+      }
+    },
+    [],
+  );
+
+  return (
+    <input
+      aria-label={ariaLabel}
+      onBlur={() => {
+        if (draft !== value) {
+          onSave(draft);
+        }
+      }}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      placeholder={placeholder}
+      type="text"
+      value={draft}
+    />
+  );
+}
+
+
+function BlurSavedTextArea({
+  ariaLabel,
+  onSave,
+  placeholder,
+  rows = 3,
+  value,
+}: {
+  ariaLabel: string;
+  onSave: (value: string) => void;
+  placeholder?: string;
+  rows?: number;
   value: string;
 }) {
   const [draft, setDraft] = useState(value);
@@ -1626,7 +1765,7 @@ function VocabularyField({
 
   return (
     <textarea
-      aria-label="Custom vocabulary"
+      aria-label={ariaLabel}
       className="vocab-textarea"
       onBlur={() => {
         if (draft !== value) {
@@ -1634,8 +1773,8 @@ function VocabularyField({
         }
       }}
       onChange={(event) => setDraft(event.currentTarget.value)}
-      placeholder="Tauri, natkins, whisper.cpp"
-      rows={3}
+      placeholder={placeholder}
+      rows={rows}
       value={draft}
     />
   );
@@ -3107,6 +3246,7 @@ function SettingRow({
 function TranscriptRow({
   busy = false,
   item,
+  onAnalyze,
   onCopy,
   onDelete,
   onPaste,
@@ -3115,6 +3255,7 @@ function TranscriptRow({
 }: {
   busy?: boolean;
   item: Transcript;
+  onAnalyze?: (id: string) => Promise<void>;
   onCopy?: (id: string) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
   onPaste?: (id: string) => Promise<void>;
@@ -3126,9 +3267,33 @@ function TranscriptRow({
       <div>
         <strong>{transcriptTitle(item)}</strong>
         <p title={item.text}>{item.text}</p>
+        {item.analysis ? (
+          <div className="note-analysis">
+            <span className="note-analysis-label">
+              <Sparkles aria-hidden="true" size={11} />
+              {item.analysisModel ?? "local LLM"}
+            </span>
+            <p>{item.analysis}</p>
+          </div>
+        ) : null}
         <span>{transcriptMeta(item)}</span>
       </div>
       <div className="row-actions">
+        {onAnalyze ? (
+          <IconButton
+            disabled={busy}
+            label={
+              busy
+                ? "Analyzing..."
+                : item.analysis
+                  ? "Re-run notes analysis"
+                  : "Analyze with local LLM"
+            }
+            onClick={() => void onAnalyze(item.id)}
+          >
+            <Sparkles aria-hidden="true" size={15} />
+          </IconButton>
+        ) : null}
         {item.audioPath ? (
           <IconButton
             disabled={busy || !onPlay}

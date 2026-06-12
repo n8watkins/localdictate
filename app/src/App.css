@@ -816,6 +816,32 @@ textarea {
   font-size: 12px;
 }
 
+.note-analysis {
+  margin: 4px 0 6px;
+  padding: 6px 8px;
+  border-left: 2px solid rgba(34, 211, 238, 0.45);
+  border-radius: 4px;
+  background: rgba(34, 211, 238, 0.06);
+}
+
+/* Three classes so this beats `.history-row span:not(.pill)`. */
+.history-row .note-analysis .note-analysis-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #67e8f9;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.history-row .note-analysis p {
+  display: block;
+  overflow: visible;
+  white-space: pre-wrap;
+  margin: 3px 0 0;
+}
+
 .history-row span:not(.pill),
 .hotkey-editor-row span:not(.pill),
 .model-row span:not(.pill) {
