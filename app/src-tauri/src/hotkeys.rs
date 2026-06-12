@@ -356,6 +356,18 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
             if !runtime.mark_pressed_once(action) {
                 return;
             }
+            // The toggle acts on key RELEASE so that holding it and tapping Q
+            // can dictate a note instead. RegisterHotKey never reports
+            // releases, so a native watcher polls the key state; keys we
+            // cannot map to a virtual key fall back to toggle-on-press.
+            #[cfg(windows)]
+            if action == HotkeyAction::ToggleDictation {
+                if let Some(vk) = code_to_vk(shortcut.key) {
+                    let _ = app.emit("localdictate:hotkey-action", action.event_name());
+                    begin_toggle_hold(app, vk);
+                    return;
+                }
+            }
             handle_pressed(app, action);
         }
         ShortcutState::Released => {
@@ -365,6 +377,133 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
             handle_released(app, action);
         }
     }
+}
+
+/// Starts the release-watching toggle hold: Q is grabbed (on the main thread,
+/// deferred - registering from inside the shortcut handler deadlocks the
+/// manager lock) and a watcher thread polls for the key release, which then
+/// either runs the suppressed-by-Q note flow or the normal toggle.
+#[cfg(windows)]
+fn begin_toggle_hold(app: &AppHandle, vk: i32) {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return;
+    };
+    runtime.toggle_held.store(true, Ordering::SeqCst);
+    runtime.note_chord_fired.store(false, Ordering::SeqCst);
+
+    let arm_app = app.clone();
+    let _ = app.run_on_main_thread(move || arm_note_chord(&arm_app));
+
+    let watch_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("localdictate-toggle-release".to_string())
+        .spawn(move || watch_toggle_release(watch_app, vk));
+    if spawned.is_err() {
+        // No watcher means no release event: fall back to toggling now.
+        log::error!("Could not spawn the toggle release watcher; toggling on press.");
+        finish_toggle_hold(app);
+    }
+}
+
+/// Polls until the toggle key is physically released, then completes the
+/// hold. Runs on its own thread, so plugin calls and dictation control are
+/// safe here.
+#[cfg(windows)]
+fn watch_toggle_release(app: AppHandle, vk: i32) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+    loop {
+        if (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    finish_toggle_hold(&app);
+}
+
+#[cfg(windows)]
+fn finish_toggle_hold(app: &AppHandle) {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return;
+    };
+    runtime.mark_released_once(HotkeyAction::ToggleDictation);
+    let fired = disarm_note_chord(app);
+    if !fired {
+        if let Err(error) = toggle_dictation(app) {
+            audio::emit_recording_error(app, error);
+        }
+    }
+}
+
+/// Maps a shortcut key code to the Windows virtual key the release watcher
+/// polls. Covers the keys a toggle hotkey is realistically bound to; None
+/// falls back to toggle-on-press without the note chord.
+#[cfg(windows)]
+fn code_to_vk(code: Code) -> Option<i32> {
+    let vk = match code {
+        Code::Backquote => 0xC0,
+        Code::KeyA => 0x41,
+        Code::KeyB => 0x42,
+        Code::KeyC => 0x43,
+        Code::KeyD => 0x44,
+        Code::KeyE => 0x45,
+        Code::KeyF => 0x46,
+        Code::KeyG => 0x47,
+        Code::KeyH => 0x48,
+        Code::KeyI => 0x49,
+        Code::KeyJ => 0x4A,
+        Code::KeyK => 0x4B,
+        Code::KeyL => 0x4C,
+        Code::KeyM => 0x4D,
+        Code::KeyN => 0x4E,
+        Code::KeyO => 0x4F,
+        Code::KeyP => 0x50,
+        Code::KeyQ => 0x51,
+        Code::KeyR => 0x52,
+        Code::KeyS => 0x53,
+        Code::KeyT => 0x54,
+        Code::KeyU => 0x55,
+        Code::KeyV => 0x56,
+        Code::KeyW => 0x57,
+        Code::KeyX => 0x58,
+        Code::KeyY => 0x59,
+        Code::KeyZ => 0x5A,
+        Code::Digit0 => 0x30,
+        Code::Digit1 => 0x31,
+        Code::Digit2 => 0x32,
+        Code::Digit3 => 0x33,
+        Code::Digit4 => 0x34,
+        Code::Digit5 => 0x35,
+        Code::Digit6 => 0x36,
+        Code::Digit7 => 0x37,
+        Code::Digit8 => 0x38,
+        Code::Digit9 => 0x39,
+        Code::F1 => 0x70,
+        Code::F2 => 0x71,
+        Code::F3 => 0x72,
+        Code::F4 => 0x73,
+        Code::F5 => 0x74,
+        Code::F6 => 0x75,
+        Code::F7 => 0x76,
+        Code::F8 => 0x77,
+        Code::F9 => 0x78,
+        Code::F10 => 0x79,
+        Code::F11 => 0x7A,
+        Code::F12 => 0x7B,
+        Code::Space => 0x20,
+        Code::Minus => 0xBD,
+        Code::Equal => 0xBB,
+        Code::BracketLeft => 0xDB,
+        Code::BracketRight => 0xDD,
+        Code::Backslash => 0xDC,
+        Code::Semicolon => 0xBA,
+        Code::Quote => 0xDE,
+        Code::Comma => 0xBC,
+        Code::Period => 0xBE,
+        Code::Slash => 0xBF,
+        _ => return None,
+    };
+    Some(vk)
 }
 
 pub fn validate_hotkeys(hotkeys: &HotkeySettings) -> Result<(), CommandError> {
@@ -580,19 +719,14 @@ fn handle_pressed(app: &AppHandle, action: HotkeyAction) {
     // still holding the key, and a pause mid-thought must not cut them off.
     let result = match action {
         HotkeyAction::HoldToTalk => tray::start_dictation(app, false),
-        // The toggle acts on RELEASE: while the key is held, Q is grabbed as
-        // the note chord, and a fired chord suppresses the release-toggle.
-        // The grab itself runs on a separate thread - the global-shortcut
-        // manager's lock is held while this handler runs, and registering
-        // inline deadlocks the main thread.
+        // Reached by the modifier-chord watcher and by toggle keys the
+        // release watcher cannot poll; plugin-shortcut toggles go through
+        // begin_toggle_hold instead (toggle on release + the ~+Q note chord).
         HotkeyAction::ToggleDictation => {
             if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
-                runtime.toggle_held.store(true, Ordering::SeqCst);
-                runtime.note_chord_fired.store(false, Ordering::SeqCst);
+                runtime.mark_released_once(HotkeyAction::ToggleDictation);
             }
-            let app = app.clone();
-            std::thread::spawn(move || arm_note_chord(&app));
-            Ok(())
+            toggle_dictation(app)
         }
         HotkeyAction::PasteLastTranscript => tray::paste_last_transcript(app),
         HotkeyAction::OpenDashboard => {
@@ -622,14 +756,8 @@ fn handle_released(app: &AppHandle, action: HotkeyAction) {
                 audio::emit_recording_error(app, error);
             }
         }
-        HotkeyAction::ToggleDictation => {
-            let fired = disarm_note_chord(app);
-            if !fired {
-                if let Err(error) = toggle_dictation(app) {
-                    audio::emit_recording_error(app, error);
-                }
-            }
-        }
+        // ToggleDictation releases are handled by the native watcher;
+        // RegisterHotKey-based shortcuts never deliver Released here anyway.
         _ => {}
     }
 }
@@ -660,17 +788,17 @@ fn arm_note_chord(app: &AppHandle) {
     }
 }
 
-/// Ends the toggle hold and schedules the Q-grab release (on a thread - see
-/// handle_pressed); returns whether the note chord fired during the hold.
+/// Ends the toggle hold and releases the Q grab (deferred to the main
+/// thread, where the manager lives); returns whether the note chord fired.
 fn disarm_note_chord(app: &AppHandle) -> bool {
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return false;
     };
     runtime.toggle_held.store(false, Ordering::SeqCst);
     if let Some(shortcut) = runtime.disarm_note_key() {
-        let app = app.clone();
-        std::thread::spawn(move || {
-            if let Err(error) = app.global_shortcut().unregister(shortcut) {
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Err(error) = app_for_main.global_shortcut().unregister(shortcut) {
                 log::error!("Could not release the note-chord key grab: {}", error);
             }
         });
