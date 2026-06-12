@@ -7,6 +7,7 @@ pub mod error;
 pub mod file_transcribe;
 pub mod google_drive;
 pub mod google_oauth;
+mod google_secrets;
 pub mod hotkeys;
 pub mod incremental;
 pub mod model_manager;

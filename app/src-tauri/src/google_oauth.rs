@@ -23,12 +23,11 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use crate::error::CommandError;
-
-// Filled in from the Google Cloud Console "Desktop app" OAuth client. Until
-// these are set, `is_configured()` is false and the commands return a clear
-// "not configured" error instead of hitting Google with a placeholder.
-const CLIENT_ID: &str = "REPLACE_WITH_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
-const CLIENT_SECRET: &str = "REPLACE_WITH_GOOGLE_CLIENT_SECRET";
+// The Google OAuth Desktop client id/secret live in the gitignored
+// `google_secrets.rs` (created from google_secrets.example.rs by build.rs), so
+// the literal secret stays out of the public repo. Until real values are
+// filled in, both are "REPLACE_…" placeholders and `is_configured()` is false.
+use crate::google_secrets::{CLIENT_ID, CLIENT_SECRET};
 
 const AUTH_URI: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
