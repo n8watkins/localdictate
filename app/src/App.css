@@ -1509,3 +1509,30 @@ kbd {
 .file-transcribe-card textarea {
   min-height: 110px;
 }
+
+/* On-brand scrollbars: thin, dark track, cyan thumb. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.28);
+  border-radius: 999px;
+  border: 2px solid rgba(7, 11, 20, 0.9);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.5);
+  border: 2px solid rgba(7, 11, 20, 0.9);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

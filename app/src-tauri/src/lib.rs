@@ -127,6 +127,11 @@ pub fn run() {
             app.manage(whisper_server::WarmTranscriber::new());
             hotkeys::setup(app.handle(), &settings.hotkeys)?;
             tray::setup(app.handle())?;
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                style_native_titlebar(&window);
+            }
+
             log::info!("LocalDictate setup complete");
             Ok(())
         })
@@ -208,4 +213,38 @@ pub fn run() {
                 }
             }
         });
+}
+
+
+/// Colors the native Windows title bar to match the app background so the
+/// window top blends into the dashboard instead of sitting as a gray strip.
+#[cfg(windows)]
+fn style_native_titlebar(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+
+    let Ok(handle) = window.hwnd() else {
+        return;
+    };
+    let hwnd = HWND(handle.0);
+
+    // App background #070b14 as COLORREF (0x00BBGGRR).
+    let caption_color: u32 = 0x0014_0B07;
+    let dark_mode: i32 = 1;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_mode as *const _ as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption_color as *const _ as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
 }
