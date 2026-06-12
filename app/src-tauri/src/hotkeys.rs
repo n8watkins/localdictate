@@ -9,7 +9,9 @@ use std::{
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
+#[cfg(windows)]
+use tauri_plugin_global_shortcut::Code;
 
 use crate::{
     app_state::AppStatus, audio, commands::BackendState, error::CommandError,
@@ -199,6 +201,7 @@ struct ChordWatcherHandle {
 }
 
 #[derive(Default)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct HotkeyRuntimeState {
     actions_by_id: Mutex<HashMap<u32, HotkeyAction>>,
     pressed_actions: Mutex<HashSet<HotkeyAction>>,
@@ -215,8 +218,18 @@ pub struct HotkeyRuntimeState {
     /// thread checks it after registering so a tap that ended before the
     /// registration completed never leaks the Q grab.
     toggle_held: AtomicBool,
+    /// Native watcher that polls the toggle key (press AND release edges).
+    /// Plugin events are unreliable for it: an unmodified Backquote hashes
+    /// to shortcut id 0, which global_hotkey never delivers, and the plugin
+    /// reports no Released state for it either. The plugin registration is
+    /// kept solely so the OS suppresses the keystroke.
+    toggle_watcher: Mutex<Option<ChordWatcherHandle>>,
+    /// True while the toggle watcher owns the toggle key; plugin events for
+    /// ToggleDictation are ignored then.
+    toggle_watched: AtomicBool,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl HotkeyRuntimeState {
     fn replace_bindings(&self, actions_by_id: HashMap<u32, HotkeyAction>) {
         if let Ok(mut bindings) = self.actions_by_id.lock() {
@@ -336,11 +349,19 @@ pub fn setup(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandErr
 }
 
 pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
+    // TEMP-DIAG: trace every shortcut event end-to-end.
+    log::info!(
+        "Shortcut event: id={} key={:?} state={:?}",
+        shortcut.id(),
+        shortcut.key,
+        event.state
+    );
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return;
     };
 
     if runtime.is_note_key(shortcut.id()) {
+        #[cfg(windows)]
         if event.state == ShortcutState::Pressed && runtime.mark_note_chord_fired() {
             handle_note_chord(app);
         }
@@ -351,22 +372,19 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
         return;
     };
 
+    // The native toggle watcher owns the toggle key when it could be
+    // mapped to a pollable virtual key; the plugin registration only exists
+    // to suppress the keystroke then.
+    if action == HotkeyAction::ToggleDictation
+        && runtime.toggle_watched.load(Ordering::SeqCst)
+    {
+        return;
+    }
+
     match event.state {
         ShortcutState::Pressed => {
             if !runtime.mark_pressed_once(action) {
                 return;
-            }
-            // The toggle acts on key RELEASE so that holding it and tapping Q
-            // can dictate a note instead. RegisterHotKey never reports
-            // releases, so a native watcher polls the key state; keys we
-            // cannot map to a virtual key fall back to toggle-on-press.
-            #[cfg(windows)]
-            if action == HotkeyAction::ToggleDictation {
-                if let Some(vk) = code_to_vk(shortcut.key) {
-                    let _ = app.emit("localdictate:hotkey-action", action.event_name());
-                    begin_toggle_hold(app, vk);
-                    return;
-                }
             }
             handle_pressed(app, action);
         }
@@ -379,55 +397,89 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
     }
 }
 
-/// Starts the release-watching toggle hold: Q is grabbed (on the main thread,
-/// deferred - registering from inside the shortcut handler deadlocks the
-/// manager lock) and a watcher thread polls for the key release, which then
-/// either runs the suppressed-by-Q note flow or the normal toggle.
-#[cfg(windows)]
-fn begin_toggle_hold(app: &AppHandle, vk: i32) {
+/// Stops any running toggle-key watcher and starts a fresh one when the
+/// toggle binding maps to a pollable virtual key. The watcher detects both
+/// edges: key down arms the Q note chord, key up runs the toggle (unless Q
+/// fired during the hold).
+fn configure_toggle_watcher(app: &AppHandle, vk: Option<i32>) {
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return;
     };
-    runtime.toggle_held.store(true, Ordering::SeqCst);
-    runtime.note_chord_fired.store(false, Ordering::SeqCst);
-    log::info!("Toggle hold started (vk 0x{:X}); arming note chord", vk);
 
-    let arm_app = app.clone();
-    let _ = app.run_on_main_thread(move || arm_note_chord(&arm_app));
+    if let Ok(mut guard) = runtime.toggle_watcher.lock() {
+        if let Some(watcher) = guard.take() {
+            watcher.stop.store(true, Ordering::SeqCst);
+            let _ = watcher.thread.join();
+        }
+    }
+    runtime.toggle_watched.store(false, Ordering::SeqCst);
 
-    let watch_app = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("localdictate-toggle-release".to_string())
-        .spawn(move || watch_toggle_release(watch_app, vk));
-    if spawned.is_err() {
-        // No watcher means no release event: fall back to toggling now.
-        log::error!("Could not spawn the toggle release watcher; toggling on press.");
-        finish_toggle_hold(app);
+    #[cfg(windows)]
+    if let Some(vk) = vk {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let app_handle = app.clone();
+        let spawned = std::thread::Builder::new()
+            .name("localdictate-toggle-watcher".to_string())
+            .spawn(move || run_toggle_watcher(app_handle, vk, thread_stop));
+        match spawned {
+            Ok(thread) => {
+                runtime.toggle_watched.store(true, Ordering::SeqCst);
+                if let Ok(mut guard) = runtime.toggle_watcher.lock() {
+                    *guard = Some(ChordWatcherHandle { stop, thread });
+                }
+                log::info!("Toggle key watcher active (vk 0x{:X})", vk);
+            }
+            Err(error) => {
+                log::error!("Failed to start toggle key watcher: {}", error);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = vk;
     }
 }
 
-/// Polls until the toggle key is physically released, then completes the
-/// hold. Runs on its own thread, so plugin calls and dictation control are
-/// safe here.
 #[cfg(windows)]
-fn watch_toggle_release(app: AppHandle, vk: i32) {
+fn run_toggle_watcher(app: AppHandle, vk: i32, stop: Arc<AtomicBool>) {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-    loop {
-        if (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 == 0 {
-            break;
+    let mut was_down = false;
+    while !stop.load(Ordering::SeqCst) {
+        let down = (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 != 0;
+        if down && !was_down {
+            on_toggle_key_down(&app);
+        } else if !down && was_down {
+            on_toggle_key_up(&app);
         }
+        was_down = down;
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    finish_toggle_hold(&app);
+    // Never leave a Q grab behind when the watcher is being replaced.
+    if was_down {
+        disarm_note_chord(&app);
+    }
 }
 
 #[cfg(windows)]
-fn finish_toggle_hold(app: &AppHandle) {
+fn on_toggle_key_down(app: &AppHandle) {
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return;
     };
-    runtime.mark_released_once(HotkeyAction::ToggleDictation);
+    let _ = app.emit(
+        "localdictate:hotkey-action",
+        HotkeyAction::ToggleDictation.event_name(),
+    );
+    runtime.toggle_held.store(true, Ordering::SeqCst);
+    runtime.note_chord_fired.store(false, Ordering::SeqCst);
+    let app = app.clone();
+    std::thread::spawn(move || arm_note_chord(&app));
+}
+
+#[cfg(windows)]
+fn on_toggle_key_up(app: &AppHandle) {
     let fired = disarm_note_chord(app);
     log::info!("Toggle key released (note chord fired: {})", fired);
     if !fired {
@@ -437,7 +489,7 @@ fn finish_toggle_hold(app: &AppHandle) {
     }
 }
 
-/// Maps a shortcut key code to the Windows virtual key the release watcher
+/// Maps a shortcut key code to the Windows virtual key the toggle watcher
 /// polls. Covers the keys a toggle hotkey is realistically bound to; None
 /// falls back to toggle-on-press without the note chord.
 #[cfg(windows)]
@@ -571,6 +623,13 @@ fn register_hotkey_set(
             Ok(ParsedShortcut::Plugin(shortcut)) => {
                 match app.global_shortcut().register(shortcut) {
                     Ok(()) => {
+                        log::info!(
+                            "Registered {:?} as shortcut id={} key={:?} mods={:?}",
+                            action,
+                            shortcut.id(),
+                            shortcut.key,
+                            shortcut.mods
+                        );
                         actions_by_id.insert(shortcut.id(), action);
                     }
                     Err(error) => record_failure(
@@ -605,7 +664,29 @@ fn register_hotkey_set(
 
     configure_chord_watcher(app, chord_bindings);
 
+    // The toggle key gets a native press/release watcher whenever its
+    // binding maps to a pollable virtual key (see configure_toggle_watcher).
+    let toggle_vk = match parse_shortcut(HotkeyAction::ToggleDictation.shortcut(hotkeys)) {
+        Ok(ParsedShortcut::Plugin(shortcut)) => toggle_vk_for(shortcut),
+        _ => None,
+    };
+    configure_toggle_watcher(app, toggle_vk);
+
     failures
+}
+
+#[cfg(windows)]
+fn toggle_vk_for(shortcut: Shortcut) -> Option<i32> {
+    // Only modifier-less bindings can be polled as a single key.
+    if !shortcut.mods.is_empty() {
+        return None;
+    }
+    code_to_vk(shortcut.key)
+}
+
+#[cfg(not(windows))]
+fn toggle_vk_for(_shortcut: Shortcut) -> Option<i32> {
+    None
 }
 
 /// Stops any running chord watcher thread, stores the new chord bindings (so
@@ -766,8 +847,10 @@ fn handle_released(app: &AppHandle, action: HotkeyAction) {
 
 /// The key grabbed while the toggle key is held; pressing it starts (or
 /// stops) a note dictation instead of the normal toggle.
+#[cfg(windows)]
 const NOTE_CHORD_CODE: Code = Code::KeyQ;
 
+#[cfg(windows)]
 fn arm_note_chord(app: &AppHandle) {
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return;
@@ -791,17 +874,20 @@ fn arm_note_chord(app: &AppHandle) {
     }
 }
 
-/// Ends the toggle hold and releases the Q grab (deferred to the main
-/// thread, where the manager lives); returns whether the note chord fired.
+/// Ends the toggle hold and releases the Q grab on a background thread
+/// (plugin register/unregister deadlocks when run on the main thread, but
+/// is fine from worker threads - the rebind command path proves it);
+/// returns whether the note chord fired.
+#[cfg(windows)]
 fn disarm_note_chord(app: &AppHandle) -> bool {
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return false;
     };
     runtime.toggle_held.store(false, Ordering::SeqCst);
     if let Some(shortcut) = runtime.disarm_note_key() {
-        let app_for_main = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Err(error) = app_for_main.global_shortcut().unregister(shortcut) {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = app.global_shortcut().unregister(shortcut) {
                 log::error!("Could not release the note-chord key grab: {}", error);
             }
         });
@@ -809,6 +895,7 @@ fn disarm_note_chord(app: &AppHandle) -> bool {
     runtime.note_chord_fired()
 }
 
+#[cfg(windows)]
 fn handle_note_chord(app: &AppHandle) {
     log::info!("Note chord (Q) pressed during toggle hold");
     let _ = app.emit("localdictate:hotkey-action", "note_dictation");
