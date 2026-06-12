@@ -32,7 +32,7 @@ pub fn analyze_text(
     let endpoint = endpoint.trim().trim_end_matches('/');
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("LocalDictate/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Scribe/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| failure(error.to_string()))?;
 

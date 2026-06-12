@@ -140,7 +140,7 @@ fn paste_transcript_text(
         let _state_guard = PasteStateGuard::start(app);
 
         // The paste hotkey can fire while one of our own windows is focused;
-        // the transcript must never be typed into LocalDictate itself.
+        // the transcript must never be typed into Scribe itself.
         platform::ensure_foreign_focus()?;
 
         match paste_method {
@@ -248,7 +248,7 @@ fn copy_and_paste_transcript_text(
         set_clipboard_text(&transcript.text)?;
         thread::sleep(Duration::from_millis(60));
         // The paste hotkey can fire while one of our own windows is focused;
-        // the transcript must never be typed into LocalDictate itself. The
+        // the transcript must never be typed into Scribe itself. The
         // clipboard copy above is kept either way so a manual paste still works.
         platform::ensure_foreign_focus()?;
         platform::send_paste_shortcut()?;
@@ -514,7 +514,7 @@ mod platform {
         }
 
         // Walking down the Z-order from our foreground window reaches the app
-        // the user was in before focusing LocalDictate. Refocusing it is allowed
+        // the user was in before focusing Scribe. Refocusing it is allowed
         // because our process currently owns the foreground window.
         let mut candidate = foreground;
         while let Ok(next) = unsafe { GetWindow(candidate, GW_HWNDNEXT) } {

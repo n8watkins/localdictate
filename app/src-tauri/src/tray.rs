@@ -14,7 +14,7 @@ use crate::{
     output,
 };
 
-const TRAY_ID: &str = "localdictate-main-tray";
+const TRAY_ID: &str = "scribe-main-tray";
 const MENU_START_DICTATION: &str = "start_dictation";
 const MENU_STOP_DICTATION: &str = "stop_dictation";
 const MENU_PASTE_LAST_TRANSCRIPT: &str = "paste_last_transcript";

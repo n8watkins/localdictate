@@ -420,7 +420,7 @@ fn clips_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
         CommandError::new(
             "app_data_dir_unavailable",
             format!(
-                "Could not locate LocalDictate app data directory. {}",
+                "Could not locate Scribe app data directory. {}",
                 error
             ),
         )

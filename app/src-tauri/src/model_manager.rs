@@ -383,7 +383,7 @@ fn stream_download(
 ) -> Result<DownloadedModel, CommandError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60 * 60))
-        .user_agent("LocalDictate/0.1")
+        .user_agent("Scribe/0.1")
         .build()
         .map_err(|error| {
             CommandError::new(
@@ -639,7 +639,7 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
         CommandError::new(
             "app_data_dir_unavailable",
             format!(
-                "Could not locate LocalDictate app data directory. {}",
+                "Could not locate Scribe app data directory. {}",
                 error
             ),
         )
@@ -688,6 +688,11 @@ fn model_file_candidates(
 fn external_model_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
+    // Prefer the new SCRIBE_MODEL_DIR override; fall back to the legacy
+    // LOCALDICTATE_MODEL_DIR for back-compat. Both are honored if set.
+    if let Some(path) = std::env::var_os("SCRIBE_MODEL_DIR") {
+        dirs.push(PathBuf::from(path));
+    }
     if let Some(path) = std::env::var_os("LOCALDICTATE_MODEL_DIR") {
         dirs.push(PathBuf::from(path));
     }

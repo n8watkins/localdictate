@@ -577,7 +577,7 @@ function friendlyCommandErrorMessage(code: string): string | null {
     no_microphone_selected:
       "Choose a microphone before recording, or switch back to the default input device.",
     microphone_permission_denied:
-      "Windows denied microphone access. Enable microphone permission for LocalDictate in Windows privacy settings.",
+      "Windows denied microphone access. Enable microphone permission for Scribe in Windows privacy settings.",
     microphone_unavailable:
       "The selected microphone is unavailable. Reconnect it or choose another input device.",
     recording_failed:
@@ -611,9 +611,9 @@ function friendlyCommandErrorMessage(code: string): string | null {
     clipboard_restore_failed:
       "The transcript was pasted, but clipboard restore failed. Check your clipboard contents before continuing.",
     app_database_error:
-      "LocalDictate could not access its local database. Restart the app; if it persists, inspect the app data folder.",
+      "Scribe could not access its local database. Restart the app; if it persists, inspect the app data folder.",
     app_data_dir_unavailable:
-      "LocalDictate could not locate its app data folder. Check Windows profile permissions and restart.",
+      "Scribe could not locate its app data folder. Check Windows profile permissions and restart.",
   };
 
   return messages[code] ?? null;

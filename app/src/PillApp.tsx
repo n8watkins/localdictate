@@ -124,7 +124,7 @@ function pillLabel(appState: AppStateSnapshot): string {
     case "Ready":
       return "Done";
     case "Error":
-      return appState.error?.message ?? "Check LocalDictate";
+      return appState.error?.message ?? "Check Scribe";
     default:
       return "";
   }

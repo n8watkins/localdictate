@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn migration_adds_audio_path_to_existing_databases() {
         let path = std::env::temp_dir().join(format!(
-            "localdictate_migration_{}.sqlite3",
+            "scribe_migration_{}.sqlite3",
             uuid::Uuid::new_v4().simple()
         ));
         {

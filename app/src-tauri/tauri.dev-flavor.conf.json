@@ -1,5 +1,5 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LocalDictate Dev",
-  "identifier": "com.natkins.localdictate.dev"
+  "productName": "Scribe Dev",
+  "identifier": "com.natkins.scribe.dev"
 }

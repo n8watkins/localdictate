@@ -25,19 +25,115 @@ use commands::BackendState;
 use db::Database;
 use tauri::Manager;
 
-/// True when running the LocalDictate Dev flavor (identifier baked at build
+/// True when running the Scribe Dev flavor (identifier baked at build
 /// time by `tauri.dev-flavor.conf.json`).
 pub fn is_dev_flavor(app: &tauri::AppHandle) -> bool {
     app.config().identifier.ends_with(".dev")
 }
 
-/// The flavored display name, used everywhere the UI says "LocalDictate".
+/// The flavored display name, used everywhere the UI says "Scribe".
 pub fn display_name(app: &tauri::AppHandle) -> &'static str {
     if is_dev_flavor(app) {
-        "LocalDictate Dev"
+        "Scribe Dev"
     } else {
-        "LocalDictate"
+        "Scribe"
     }
+}
+
+/// Carry forward a pre-rebrand install's data after the LocalDictate->Scribe
+/// rename.
+///
+/// Tauri derives the per-app data directory from the bundle identifier
+/// (`%APPDATA%\<identifier>\`). Renaming the identifier from
+/// `com.natkins.localdictate` to `com.natkins.scribe` therefore points the app
+/// at a brand-new, empty directory and would strand the user's existing
+/// SQLite DB, recorded clips, and downloaded Whisper models in the old folder.
+/// This helper copies that data across on first run.
+///
+/// Best-effort by design: any failure is logged and swallowed so a migration
+/// hiccup can never block app startup.
+fn migrate_pre_rebrand_data(app: &tauri::AppHandle, new_data_dir: &std::path::Path) {
+    // Derive the old identifier from the current one. If they match, this build
+    // wasn't renamed (or is the old flavor) and there's nothing to migrate.
+    let old_identifier = app
+        .config()
+        .identifier
+        .replace(".scribe", ".localdictate");
+    if old_identifier == app.config().identifier {
+        return;
+    }
+
+    // The data dir lives directly under %APPDATA%; the old install used the
+    // same parent with the old identifier as the folder name.
+    let Some(parent) = new_data_dir.parent() else {
+        return;
+    };
+    let old_data_dir = parent.join(&old_identifier);
+    if !old_data_dir.is_dir() {
+        return;
+    }
+
+    // Idempotency: if the new DB already exists, migration already ran (or a
+    // fresh install has already initialized its own DB). Leave it untouched.
+    let new_db = new_data_dir.join("scribe.sqlite3");
+    if new_db.exists() {
+        return;
+    }
+
+    log::info!(
+        "Migrating pre-rebrand data from {} to {}",
+        old_data_dir.display(),
+        new_data_dir.display()
+    );
+
+    // Copy the SQLite DB and its WAL/SHM sidecars, renaming the prefix.
+    for (old_name, new_name) in [
+        ("localdictate.sqlite3", "scribe.sqlite3"),
+        ("localdictate.sqlite3-wal", "scribe.sqlite3-wal"),
+        ("localdictate.sqlite3-shm", "scribe.sqlite3-shm"),
+    ] {
+        let src = old_data_dir.join(old_name);
+        if src.exists() {
+            let dst = new_data_dir.join(new_name);
+            if let Err(error) = std::fs::copy(&src, &dst) {
+                log::warn!("Could not copy {} during rebrand migration: {}", old_name, error);
+            }
+        }
+    }
+
+    // Copy the clips and models subdirectories, skipping anything that already
+    // exists at the destination.
+    for subdir in ["clips", "models"] {
+        let src = old_data_dir.join(subdir);
+        if src.is_dir() {
+            if let Err(error) = copy_dir_skip_existing(&src, &new_data_dir.join(subdir)) {
+                log::warn!(
+                    "Could not copy {} directory during rebrand migration: {}",
+                    subdir,
+                    error
+                );
+            }
+        }
+    }
+
+    log::info!("Pre-rebrand data migration complete");
+}
+
+/// Recursively copy `from` into `to`, creating `to` (and subdirectories) as
+/// needed and skipping any destination file that already exists. std-only.
+fn copy_dir_skip_existing(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_skip_existing(&src, &dst)?;
+        } else if !dst.exists() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -86,7 +182,11 @@ pub fn run() {
             let audio_temp_dir = app.path().app_cache_dir()?.join("recordings");
             std::fs::create_dir_all(&app_data_dir)?;
             std::fs::create_dir_all(&audio_temp_dir)?;
-            let db = Database::open(app_data_dir.join("localdictate.sqlite3"))?;
+            // Carry forward data from the pre-rebrand identifier so existing
+            // users keep their DB/clips/models after the LocalDictate->Scribe
+            // rename. Best-effort; never blocks startup.
+            migrate_pre_rebrand_data(app.handle(), &app_data_dir);
+            let db = Database::open(app_data_dir.join("scribe.sqlite3"))?;
             let mut settings = db.get_settings()?;
             let mut settings_migrated = false;
             // One-time migration: replace the old default hotkeys (which
@@ -151,7 +251,7 @@ pub fn run() {
             // window title (and taskbar entry) carries the flavored name.
             if is_dev_flavor(app.handle()) {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_title("LocalDictate Dev");
+                    let _ = window.set_title("Scribe Dev");
                 }
             }
             #[cfg(windows)]
@@ -159,7 +259,7 @@ pub fn run() {
                 style_native_titlebar(&window);
             }
 
-            log::info!("LocalDictate setup complete");
+            log::info!("Scribe setup complete");
             Ok(())
         })
         .on_window_event(|window, event| {

@@ -25,7 +25,7 @@ pub fn check_for_update() -> Result<UpdateCheckResult, CommandError> {
     let current = env!("CARGO_PKG_VERSION");
 
     let response = reqwest::blocking::Client::builder()
-        .user_agent(concat!("LocalDictate/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Scribe/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| CommandError::new("update_check_failed", error.to_string()))?

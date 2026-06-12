@@ -381,7 +381,7 @@ pub fn open_data_folder(app: tauri::AppHandle) -> Result<(), CommandError> {
         CommandError::new(
             "app_data_dir_unavailable",
             format!(
-                "Could not locate LocalDictate app data directory. {}",
+                "Could not locate Scribe app data directory. {}",
                 error
             ),
         )

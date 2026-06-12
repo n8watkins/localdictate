@@ -1,6 +1,6 @@
-# LocalDictate
+# Scribe
 
-LocalDictate is a private, local-first Windows speech-to-text tray app built with Tauri, React, TypeScript, Rust, SQLite, and whisper.cpp.
+Scribe is a private, local-first Windows speech-to-text tray app built with Tauri, React, TypeScript, Rust, SQLite, and whisper.cpp.
 
 Reference docs:
 

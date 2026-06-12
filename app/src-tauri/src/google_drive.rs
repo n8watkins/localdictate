@@ -22,7 +22,7 @@ use crate::transcript::Transcript;
 
 const API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
-const ROOT_FOLDER_NAME: &str = "LocalDictate Voice Notes";
+const ROOT_FOLDER_NAME: &str = "Scribe Voice Notes";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -48,7 +48,7 @@ impl Drive {
     pub fn new(access_token: impl Into<String>) -> Result<Self, CommandError> {
         Ok(Self {
             client: reqwest::blocking::Client::builder()
-                .user_agent(concat!("LocalDictate/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("Scribe/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .map_err(|error| failure(error.to_string()))?,
             token: access_token.into(),
@@ -383,7 +383,7 @@ mod tests {
         assert!(requests.iter().all(|r| r.contains("Bearer tok")));
         // The first call is a folder query for the root app folder.
         assert!(requests[0].starts_with("GET /files?q="));
-        assert!(requests[0].contains(encode("LocalDictate Voice Notes").as_str()));
+        assert!(requests[0].contains(encode("Scribe Voice Notes").as_str()));
         // The upload PATCH carried the rendered note text + summary.
         assert!(requests[6].starts_with("PATCH /files/daily1?uploadType=media"));
         assert!(requests[6].contains("buy milk and call Sam"));
@@ -395,7 +395,7 @@ mod tests {
         // Folders + daily file already exist: each find returns an id, so the
         // only write is the content PATCH (4 calls total).
         let (base, handle) = mock_server(vec![
-            json!({ "files": [{ "id": "root1", "name": "LocalDictate Voice Notes" }] }).to_string(),
+            json!({ "files": [{ "id": "root1", "name": "Scribe Voice Notes" }] }).to_string(),
             json!({ "files": [{ "id": "month1", "name": "2026-06" }] }).to_string(),
             json!({ "files": [{ "id": "daily1", "name": "2026-06-12.md" }] }).to_string(),
             json!({ "id": "daily1" }).to_string(),

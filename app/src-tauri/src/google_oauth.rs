@@ -98,7 +98,7 @@ pub fn authorize(
 
     let refresh = tokens.refresh_token.ok_or_else(|| {
         failure(
-            "Google did not return a refresh token. Remove LocalDictate from your Google account's \
+            "Google did not return a refresh token. Remove Scribe from your Google account's \
              third-party access and sign in again.",
         )
     })?;
@@ -307,12 +307,12 @@ fn read_request_line(stream: &mut std::net::TcpStream) -> String {
 
 fn respond(stream: &mut std::net::TcpStream, ok: bool) {
     let message = if ok {
-        "You're signed in. You can close this tab and return to LocalDictate."
+        "You're signed in. You can close this tab and return to Scribe."
     } else {
-        "Sign-in could not be completed. You can close this tab and try again in LocalDictate."
+        "Sign-in could not be completed. You can close this tab and try again in Scribe."
     };
     let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>LocalDictate</title></head>\
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Scribe</title></head>\
          <body style=\"font-family:system-ui;background:#0d1320;color:#e2e8f0;\
          display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">\
          <p style=\"font-size:18px\">{message}</p></body></html>"
@@ -352,7 +352,7 @@ fn load_refresh_token(service: &str) -> Result<String, CommandError> {
 
 fn http_client() -> Result<reqwest::blocking::Client, CommandError> {
     reqwest::blocking::Client::builder()
-        .user_agent(concat!("LocalDictate/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Scribe/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| failure(error.to_string()))
 }

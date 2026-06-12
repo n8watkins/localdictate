@@ -1455,7 +1455,7 @@ pub fn emit_recording_error(app: &AppHandle, error: CommandError) {
 fn unsupported_audio_platform() -> CommandError {
     CommandError::new(
         "audio_platform_unsupported",
-        "Audio capture is implemented for Windows in LocalDictate V1.",
+        "Audio capture is implemented for Windows in Scribe V1.",
     )
 }
 
@@ -1544,7 +1544,7 @@ mod tests {
 
     #[test]
     fn writes_pcm_16_mono_wav() {
-        let path = std::env::temp_dir().join(format!("localdictate-test-{}.wav", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("scribe-test-{}.wav", Uuid::new_v4()));
         write_wav(&path, &[0.0, 0.5, -0.5]).unwrap();
 
         let reader = hound::WavReader::open(&path).unwrap();

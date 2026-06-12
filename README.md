@@ -1,4 +1,4 @@
-# LocalDictate
+# Scribe
 
 Private, local-first dictation for Windows. Hold a hotkey, talk, release — your words are transcribed on your own machine by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and inserted wherever your cursor is. No cloud, no account, no audio ever leaving your PC.
 
@@ -14,10 +14,10 @@ Windows 10/11 x64 only, by design. There are no plans to over-build this for oth
 
 ## Install (for users)
 
-1. Download `LocalDictate_x64-setup.exe` from the [latest release](../../releases/latest) and run it.
+1. Download `Scribe_x64-setup.exe` from the [latest release](../../releases/latest) and run it.
    - The binary is not code-signed, so Windows SmartScreen will warn you. Click **More info → Run anyway**.
    - The installer bootstraps Microsoft WebView2 automatically if you don't have it.
-2. Launch LocalDictate. Open the **Models** tab and download a model — `base.en` (~140 MB) is a good start; `small.en` is more accurate and still fast on modern CPUs. Models download once from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and run entirely offline afterward.
+2. Launch Scribe. Open the **Models** tab and download a model — `base.en` (~140 MB) is a good start; `small.en` is more accurate and still fast on modern CPUs. Models download once from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and run entirely offline afterward.
 3. Open the **Audio** tab, pick your microphone, and use **Record test** / **Play test** to confirm it hears you.
 4. Put your cursor in any app, hold `Ctrl+Win`, and talk.
 
@@ -36,7 +36,7 @@ If a hotkey conflicts with another app, rebind it in the **Hotkeys** tab — con
 
 ### Privacy
 
-Audio is captured to a temp folder, transcribed locally, and the temp audio is deleted. Transcripts live in a local SQLite database under `%APPDATA%\com.natkins.localdictate\` (the **Data & Privacy** tab can open the folder, clear history, or disable history entirely). Nothing is uploaded anywhere; the only network access is the one-time model download you trigger yourself.
+Audio is captured to a temp folder, transcribed locally, and the temp audio is deleted. Transcripts live in a local SQLite database under `%APPDATA%\com.natkins.scribe\` (the **Data & Privacy** tab can open the folder, clear history, or disable history entirely). Nothing is uploaded anywhere; the only network access is the one-time model download you trigger yourself.
 
 ## Building from source
 

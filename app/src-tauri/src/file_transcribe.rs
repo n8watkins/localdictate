@@ -196,7 +196,7 @@ fn work_dir(app: &AppHandle) -> Result<PathBuf, CommandError> {
         .map_err(|error| {
             CommandError::new(
                 "app_data_dir_unavailable",
-                format!("Could not locate LocalDictate cache directory. {}", error),
+                format!("Could not locate Scribe cache directory. {}", error),
             )
         })?
         .join("file-transcribe");

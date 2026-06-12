@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LocalDictate",
+  "productName": "Scribe",
   "version": "0.2.0",
-  "identifier": "com.natkins.localdictate",
+  "identifier": "com.natkins.scribe",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "LocalDictate",
+        "title": "Scribe",
         "width": 940,
         "height": 600,
         "minWidth": 820,
@@ -22,7 +22,7 @@
       {
         "label": "pill",
         "url": "index.html?view=pill",
-        "title": "LocalDictate Pill",
+        "title": "Scribe Pill",
         "width": 230,
         "height": 56,
         "visible": false,
@@ -65,7 +65,7 @@
       "resources/": ""
     },
     "shortDescription": "Private local dictation for Windows.",
-    "longDescription": "LocalDictate is a Windows tray utility for recording speech, transcribing locally with Whisper, and inserting the Last Transcript Buffer without permanently overwriting the clipboard.",
+    "longDescription": "Scribe is a Windows tray utility for recording speech, transcribing locally with Whisper, and inserting the Last Transcript Buffer without permanently overwriting the clipboard.",
     "category": "Productivity",
     "windows": {
       "allowDowngrades": false,
@@ -80,7 +80,7 @@
         "compression": "lzma",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
-        "startMenuFolder": "LocalDictate"
+        "startMenuFolder": "Scribe"
       },
       "wix": {
         "language": "en-US"

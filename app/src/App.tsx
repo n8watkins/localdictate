@@ -305,7 +305,7 @@ function App() {
             setToast({
               id: Date.now(),
               tone: "info",
-              message: `LocalDictate v${result.latestVersion} is available — see About to view the release.`,
+              message: `Scribe v${result.latestVersion} is available — see About to view the release.`,
             });
           }
         })
@@ -614,10 +614,10 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">LD</div>
+          <div className="brand-mark">S</div>
           <div>
             <div className="brand-name">
-              LocalDictate
+              Scribe
               {isDevFlavor ? <span className="brand-badge">DEV</span> : null}
             </div>
             <div className="brand-subtitle">Private local dictation</div>
@@ -1484,7 +1484,7 @@ function SettingsView({
         title="App behavior"
       >
         <SettingRow
-          description="Start LocalDictate when Windows starts."
+          description="Start Scribe when Windows starts."
           label="Launch at startup"
         >
           <Toggle
@@ -2741,8 +2741,8 @@ function ModelsView({
           {settings.selectedModelId ?? "No model selected"}
         </strong>
         <p className="muted">
-          LocalDictate uses its own app data models first, then compatible
-          files from LOCALDICTATE_MODEL_DIR when set.
+          Scribe uses its own app data models first, then compatible
+          files from SCRIBE_MODEL_DIR when set.
         </p>
       </article>
 
@@ -3221,13 +3221,13 @@ function AboutView() {
       <article className="buffer-card span-2">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">LocalDictate</p>
+            <p className="eyebrow">Scribe</p>
             <h2>Dictate locally without consuming your clipboard</h2>
           </div>
           <span className="pill preserve">Local-first</span>
         </div>
         <p className="transcript-text">
-          LocalDictate is a Windows tray utility for private speech-to-text. It
+          Scribe is a Windows tray utility for private speech-to-text. It
           records when you press a global hotkey, transcribes locally with
           Whisper, stores the result in a Last Transcript Buffer, and lets you
           insert it later without permanently overwriting the system clipboard.
@@ -3293,7 +3293,7 @@ function AboutView() {
           description="Default location for app data and models."
           label="Local data path"
         >
-          <code>%APPDATA%/LocalDictate/</code>
+          <code>%APPDATA%/com.natkins.scribe/</code>
         </SettingRow>
       </SectionPanel>
     </section>
@@ -3727,7 +3727,7 @@ function LoadingPanel() {
   return (
     <article className="panel-card loading-panel">
       <RefreshCw aria-hidden="true" size={18} />
-      <span>Loading dashboard data from LocalDictate commands...</span>
+      <span>Loading dashboard data from Scribe commands...</span>
     </article>
   );
 }
