@@ -390,6 +390,7 @@ fn begin_toggle_hold(app: &AppHandle, vk: i32) {
     };
     runtime.toggle_held.store(true, Ordering::SeqCst);
     runtime.note_chord_fired.store(false, Ordering::SeqCst);
+    log::info!("Toggle hold started (vk 0x{:X}); arming note chord", vk);
 
     let arm_app = app.clone();
     let _ = app.run_on_main_thread(move || arm_note_chord(&arm_app));
@@ -428,6 +429,7 @@ fn finish_toggle_hold(app: &AppHandle) {
     };
     runtime.mark_released_once(HotkeyAction::ToggleDictation);
     let fired = disarm_note_chord(app);
+    log::info!("Toggle key released (note chord fired: {})", fired);
     if !fired {
         if let Err(error) = toggle_dictation(app) {
             audio::emit_recording_error(app, error);
@@ -773,6 +775,7 @@ fn arm_note_chord(app: &AppHandle) {
     let shortcut = Shortcut::new(None, NOTE_CHORD_CODE);
     match app.global_shortcut().register(shortcut) {
         Ok(()) => {
+            log::debug!("Note chord key grabbed");
             if !runtime.arm_note_key(shortcut) {
                 // The tap ended before registration finished: release the
                 // grab immediately so Q keeps typing normally.
@@ -807,6 +810,7 @@ fn disarm_note_chord(app: &AppHandle) -> bool {
 }
 
 fn handle_note_chord(app: &AppHandle) {
+    log::info!("Note chord (Q) pressed during toggle hold");
     let _ = app.emit("localdictate:hotkey-action", "note_dictation");
     let result = (|| {
         let state = app.state::<BackendState>();
