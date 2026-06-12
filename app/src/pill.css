@@ -232,3 +232,21 @@ body,
     opacity: 0.72;
   }
 }
+
+/* Note-taking dictation (tilde+Q): the pill goes blue while recording. */
+.pill-shell.note-session {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.pill-shell.note-session .pill-bar {
+  background: #38bdf8;
+}
+
+.pill-shell.note-session .pill-pulse {
+  background: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+}
+
+.pill-shell.note-session.recording:hover {
+  border-color: rgba(56, 189, 248, 0.6);
+}

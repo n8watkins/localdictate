@@ -9,7 +9,7 @@ use std::{
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 use crate::{
     app_state::AppStatus, audio, commands::BackendState, error::CommandError,
@@ -205,6 +205,12 @@ pub struct HotkeyRuntimeState {
     chord_bindings: Mutex<Vec<(ModifierChord, HotkeyAction)>>,
     chord_watcher: Mutex<Option<ChordWatcherHandle>>,
     registration_errors: Mutex<HashMap<HotkeyAction, String>>,
+    /// The note-chord key (Q), registered only while the toggle key is
+    /// physically held so it never interferes with normal typing.
+    note_key: Mutex<Option<Shortcut>>,
+    /// Whether Q fired during the current toggle hold; a fired chord
+    /// suppresses the release-toggle.
+    note_chord_fired: AtomicBool,
 }
 
 impl HotkeyRuntimeState {
@@ -268,6 +274,35 @@ impl HotkeyRuntimeState {
         }
     }
 
+    fn arm_note_key(&self, shortcut: Shortcut) {
+        if let Ok(mut guard) = self.note_key.lock() {
+            *guard = Some(shortcut);
+        }
+        self.note_chord_fired.store(false, Ordering::SeqCst);
+    }
+
+    fn disarm_note_key(&self) -> Option<Shortcut> {
+        self.note_key.lock().ok().and_then(|mut guard| guard.take())
+    }
+
+    fn is_note_key(&self, id: u32) -> bool {
+        self.note_key
+            .lock()
+            .ok()
+            .and_then(|guard| guard.map(|shortcut| shortcut.id() == id))
+            .unwrap_or(false)
+    }
+
+    /// Marks the chord as fired; returns true only for the first firing of
+    /// the current toggle hold (filters key autorepeat).
+    fn mark_note_chord_fired(&self) -> bool {
+        !self.note_chord_fired.swap(true, Ordering::SeqCst)
+    }
+
+    fn note_chord_fired(&self) -> bool {
+        self.note_chord_fired.load(Ordering::SeqCst)
+    }
+
     fn registration_error_for(&self, action: HotkeyAction) -> Option<String> {
         self.registration_errors
             .lock()
@@ -295,6 +330,14 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return;
     };
+
+    if runtime.is_note_key(shortcut.id()) {
+        if event.state == ShortcutState::Pressed && runtime.mark_note_chord_fired() {
+            handle_note_chord(app);
+        }
+        return;
+    }
+
     let Some(action) = runtime.action_for(shortcut) else {
         return;
     };
@@ -528,7 +571,12 @@ fn handle_pressed(app: &AppHandle, action: HotkeyAction) {
     // still holding the key, and a pause mid-thought must not cut them off.
     let result = match action {
         HotkeyAction::HoldToTalk => tray::start_dictation(app, false),
-        HotkeyAction::ToggleDictation => toggle_dictation(app),
+        // The toggle acts on RELEASE: while the key is held, Q is grabbed as
+        // the note chord, and a fired chord suppresses the release-toggle.
+        HotkeyAction::ToggleDictation => {
+            arm_note_chord(app);
+            Ok(())
+        }
         HotkeyAction::PasteLastTranscript => tray::paste_last_transcript(app),
         HotkeyAction::OpenDashboard => {
             let toggles = app
@@ -551,10 +599,69 @@ fn handle_pressed(app: &AppHandle, action: HotkeyAction) {
 }
 
 fn handle_released(app: &AppHandle, action: HotkeyAction) {
-    if action == HotkeyAction::HoldToTalk {
-        if let Err(error) = tray::stop_dictation(app) {
-            audio::emit_recording_error(app, error);
+    match action {
+        HotkeyAction::HoldToTalk => {
+            if let Err(error) = tray::stop_dictation(app) {
+                audio::emit_recording_error(app, error);
+            }
         }
+        HotkeyAction::ToggleDictation => {
+            if !disarm_note_chord(app) {
+                if let Err(error) = toggle_dictation(app) {
+                    audio::emit_recording_error(app, error);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The key grabbed while the toggle key is held; pressing it starts (or
+/// stops) a note dictation instead of the normal toggle.
+const NOTE_CHORD_CODE: Code = Code::KeyQ;
+
+fn arm_note_chord(app: &AppHandle) {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return;
+    };
+    let shortcut = Shortcut::new(None, NOTE_CHORD_CODE);
+    match app.global_shortcut().register(shortcut) {
+        Ok(()) => runtime.arm_note_key(shortcut),
+        Err(error) => log::warn!(
+            "Note chord unavailable: could not grab Q during the toggle hold: {}",
+            error
+        ),
+    }
+}
+
+/// Releases the Q grab; returns whether the note chord fired during the hold.
+fn disarm_note_chord(app: &AppHandle) -> bool {
+    let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
+        return false;
+    };
+    if let Some(shortcut) = runtime.disarm_note_key() {
+        if let Err(error) = app.global_shortcut().unregister(shortcut) {
+            log::error!("Could not release the note-chord key grab: {}", error);
+        }
+    }
+    runtime.note_chord_fired()
+}
+
+fn handle_note_chord(app: &AppHandle) {
+    let _ = app.emit("localdictate:hotkey-action", "note_dictation");
+    let result = (|| {
+        let state = app.state::<BackendState>();
+        let status = state.app_state()?.status().clone();
+        match status {
+            AppStatus::Idle | AppStatus::Ready | AppStatus::Error => {
+                tray::start_note_dictation(app)
+            }
+            AppStatus::Recording => tray::stop_dictation(app),
+            _ => Ok(()),
+        }
+    })();
+    if let Err(error) = result {
+        audio::emit_recording_error(app, error);
     }
 }
 

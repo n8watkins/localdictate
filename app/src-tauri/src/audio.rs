@@ -74,6 +74,10 @@ pub struct MicrophoneInfo {
 pub struct StartRecordingRequest {
     pub microphone_id: Option<String>,
     pub max_duration_ms: Option<u64>,
+    /// Note-taking dictation (tilde+Q): saved to history flagged as a note,
+    /// never auto-pasted; the pill renders blue while it records.
+    #[serde(default)]
+    pub is_note: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +91,7 @@ pub struct RecordingSessionInfo {
     pub started_at: DateTime<Utc>,
     pub max_duration_ms: u64,
     pub is_test_clip: bool,
+    pub is_note: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +117,8 @@ pub struct RecordingResult {
     pub reason: Option<String>,
     pub started_at: DateTime<Utc>,
     pub stopped_at: DateTime<Utc>,
+    #[serde(default)]
+    pub is_note: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -269,6 +276,7 @@ impl AudioService {
             started_at,
             max_duration_ms,
             is_test_clip,
+            is_note: request.is_note && !is_test_clip,
         };
         let (chunk_tx, chunk_rx) = unbounded::<AudioChunk>();
         let (control_tx, control_rx) = unbounded::<WorkerControl>();
@@ -540,6 +548,7 @@ pub fn record_test_clip_for_app(
     let request = StartRecordingRequest {
         microphone_id: None,
         max_duration_ms: Some(duration_ms.saturating_add(1_000)),
+        is_note: false,
     };
     // Test clips are never silence auto-stopped: they run for a fixed
     // duration and must capture whatever the mic hears.
@@ -986,6 +995,7 @@ fn recording_result(
         reason,
         started_at: info.started_at,
         stopped_at,
+        is_note: info.is_note,
     }
 }
 

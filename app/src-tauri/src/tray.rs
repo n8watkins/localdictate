@@ -139,6 +139,28 @@ pub fn start_dictation(app: &AppHandle, allow_auto_stop: bool) -> Result<(), Com
     Ok(())
 }
 
+/// Starts a note-taking dictation (tilde+Q): recorded and transcribed like a
+/// normal dictation, but saved flagged as a note and never auto-pasted.
+pub fn start_note_dictation(app: &AppHandle) -> Result<(), CommandError> {
+    let state = app.state::<BackendState>();
+    let snapshot = state.app_state()?.snapshot();
+
+    if matches!(
+        snapshot.status,
+        AppStatus::Idle | AppStatus::Ready | AppStatus::Error
+    ) {
+        let request = audio::StartRecordingRequest {
+            is_note: true,
+            ..Default::default()
+        };
+        let _ = audio::start_recording_for_app(app, Some(request), true)?;
+        let status = state.app_state()?.status().clone();
+        update_tray_status(app, status);
+    }
+
+    Ok(())
+}
+
 pub fn stop_dictation(app: &AppHandle) -> Result<(), CommandError> {
     let state = app.state::<BackendState>();
     let snapshot = state.app_state()?.snapshot();

@@ -181,6 +181,7 @@ pub fn list_recent_transcripts(
 pub fn search_transcripts(
     state: tauri::State<'_, BackendState>,
     query: Option<String>,
+    notes_only: Option<bool>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<TranscriptSearchResult, CommandError> {
@@ -188,7 +189,7 @@ pub fn search_transcripts(
     let offset = offset.unwrap_or_default();
     state
         .db()?
-        .search_transcripts(query.as_deref(), limit, offset)
+        .search_transcripts(query.as_deref(), notes_only.unwrap_or(false), limit, offset)
 }
 
 #[tauri::command]

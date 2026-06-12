@@ -182,6 +182,7 @@ fn transcribe_recording_inner(
     transcript.output_mode = Some(settings.output_mode.clone());
     transcript.paste_method = Some(settings.paste_method.clone());
     transcript.transcription_latency_ms = Some(whisper_result.latency_ms);
+    transcript.is_note = recording.is_note;
 
     // Claim the recording WAV before WavCleanup runs: the move removes the
     // source, so the cleanup's remove becomes a no-op. A clip failure must
@@ -197,9 +198,13 @@ fn transcribe_recording_inner(
         }
     }
 
-    let save_result = state
-        .db()
-        .and_then(|db| db.save_last_transcript_with_history(&transcript, settings.history_enabled));
+    let save_result = state.db().and_then(|db| {
+        if transcript.is_note {
+            db.save_note_transcript(&transcript)
+        } else {
+            db.save_last_transcript_with_history(&transcript, settings.history_enabled)
+        }
+    });
     if let Err(error) = save_result {
         // A clip whose transcript was never saved would be orphaned forever.
         if let Some(path) = transcript.audio_path.as_deref() {
@@ -219,8 +224,11 @@ fn transcribe_recording_inner(
     };
 
     let _ = app.emit("localdictate:dictation-transcribed", &result);
-    if let Err(error) = output::handle_transcription_output(app, &transcript, &settings) {
-        output::emit_output_failed(app, transcript.id.clone(), &error);
+    // Notes are for the archive, not the cursor: never auto-paste them.
+    if !transcript.is_note {
+        if let Err(error) = output::handle_transcription_output(app, &transcript, &settings) {
+            output::emit_output_failed(app, transcript.id.clone(), &error);
+        }
     }
     Ok(Some(result))
 }

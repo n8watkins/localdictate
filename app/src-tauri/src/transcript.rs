@@ -23,6 +23,10 @@ pub struct Transcript {
     /// pre-clip JSON (e.g. the Last Transcript Buffer) deserializing.
     #[serde(default)]
     pub audio_path: Option<String>,
+    /// True for note-taking dictations (tilde+Q): saved to history but never
+    /// auto-pasted, and listed in the dashboard's Notes view.
+    #[serde(default)]
+    pub is_note: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +71,7 @@ impl Transcript {
             paste_method: None,
             transcription_latency_ms: None,
             audio_path: None,
+            is_note: false,
         })
     }
 }

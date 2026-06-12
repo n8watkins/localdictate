@@ -82,6 +82,7 @@ export type Transcript = {
   pasteMethod: PasteMethod | null;
   transcriptionLatencyMs: number | null;
   audioPath: string | null;
+  isNote: boolean;
 };
 
 export type TranscriptSearchResult = {
@@ -181,6 +182,7 @@ export type MicrophoneInfo = {
 export type StartRecordingRequest = {
   microphoneId?: string | null;
   maxDurationMs?: number;
+  isNote?: boolean;
 };
 
 export type RecordingSessionInfo = {
@@ -192,6 +194,7 @@ export type RecordingSessionInfo = {
   startedAt: string;
   maxDurationMs: number;
   isTestClip: boolean;
+  isNote: boolean;
 };
 
 export type RecordingResultStatus =
@@ -212,6 +215,7 @@ export type RecordingResult = {
   reason: string | null;
   startedAt: string;
   stoppedAt: string;
+  isNote: boolean;
 };
 
 export type AudioLevelEvent = {
@@ -350,14 +354,16 @@ export function listRecentTranscripts({
 
 export function searchTranscripts({
   query,
+  notesOnly,
   limit,
   offset,
 }: {
   query?: string;
+  notesOnly?: boolean;
   limit?: number;
   offset?: number;
 } = {}): Promise<TranscriptSearchResult> {
-  return invoke("search_transcripts", { query, limit, offset });
+  return invoke("search_transcripts", { query, notesOnly, limit, offset });
 }
 
 export function getTranscript(id: string): Promise<Transcript | null> {

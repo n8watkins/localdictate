@@ -20,6 +20,7 @@ import {
   Keyboard,
   Mic,
   MonitorCog,
+  NotebookPen,
   Play,
   Radio,
   RefreshCw,
@@ -99,6 +100,7 @@ type ViewName =
   | "Dashboard"
   | "Transcribe"
   | "History"
+  | "Notes"
   | "Stats"
   | "Settings"
   | "Data & Privacy"
@@ -132,6 +134,7 @@ const navItems: { label: ViewName; Icon: LucideIcon }[] = [
   { label: "Dashboard", Icon: Gauge },
   { label: "Transcribe", Icon: Mic },
   { label: "History", Icon: HistoryIcon },
+  { label: "Notes", Icon: NotebookPen },
   { label: "Stats", Icon: BarChart3 },
   { label: "Settings", Icon: SettingsIcon },
   { label: "Data & Privacy", Icon: ShieldCheck },
@@ -153,6 +156,10 @@ const viewTitles: Record<ViewName, { eyebrow: string; title: string }> = {
   History: {
     eyebrow: "History",
     title: "Search and reuse local transcripts",
+  },
+  Notes: {
+    eyebrow: "Notes",
+    title: "Dictated notes (hold ~ and tap Q)",
   },
   Stats: {
     eyebrow: "Stats",
@@ -715,6 +722,8 @@ function renderView(
       );
     case "History":
       return <HistoryView actions={actions} data={data} />;
+    case "Notes":
+      return <HistoryView actions={actions} data={data} notesOnly />;
     case "Stats":
       return <StatsView stats={data.stats} />;
     case "Settings":
@@ -1114,9 +1123,11 @@ function FileTranscribeCard() {
 function HistoryView({
   actions,
   data,
+  notesOnly = false,
 }: {
   actions: ViewActions;
   data: DashboardData;
+  notesOnly?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [offset, setOffset] = useState(0);
@@ -1129,7 +1140,7 @@ function HistoryView({
   const [playingId, setPlayingId] = useState<string | null>(null);
   const playbackRef = useRef<HTMLAudioElement | null>(null);
   const { settings } = data;
-  const pageSize = 10;
+  const pageSize = 25;
 
   const loadHistory = useCallback(
     async (nextOffset: number) => {
@@ -1139,6 +1150,7 @@ function HistoryView({
       try {
         let result = await searchTranscripts({
           query: query.trim() || undefined,
+          notesOnly: notesOnly || undefined,
           limit: pageSize,
           offset: nextOffset,
         });
@@ -1149,6 +1161,7 @@ function HistoryView({
         ) {
           result = await searchTranscripts({
             query: query.trim() || undefined,
+            notesOnly: notesOnly || undefined,
             limit: pageSize,
             offset: Math.max(0, nextOffset - pageSize),
           });
@@ -1163,7 +1176,7 @@ function HistoryView({
         setHistoryLoading(false);
       }
     },
-    [query],
+    [query, notesOnly],
   );
 
   useEffect(() => {
@@ -1314,21 +1327,23 @@ function HistoryView({
               value={query}
             />
           </div>
-          <button
-            className="secondary-button"
-            disabled={clearingHistory || total === 0}
-            onClick={() => void handleClearHistory()}
-            type="button"
-          >
-            <Trash2 aria-hidden="true" size={15} />
-            {clearingHistory ? "Clearing..." : "Clear all"}
-          </button>
+          {notesOnly ? null : (
+            <button
+              className="secondary-button"
+              disabled={clearingHistory || total === 0}
+              onClick={() => void handleClearHistory()}
+              type="button"
+            >
+              <Trash2 aria-hidden="true" size={15} />
+              {clearingHistory ? "Clearing..." : "Clear all"}
+            </button>
+          )}
         </div>
       </article>
 
       <article className="panel-card span-2">
         <div className="section-heading compact">
-          <h2>Transcript archive</h2>
+          <h2>{notesOnly ? "Notes" : "Transcript archive"}</h2>
           <Archive aria-hidden="true" size={16} />
           <span className="muted">
             {pageStart}-{pageEnd} of {total} local records
@@ -1347,7 +1362,13 @@ function HistoryView({
           </div>
         ) : null}
         {!historyLoading && transcripts.length === 0 ? (
-          <EmptyState message="No local transcript records match this view yet." />
+          <EmptyState
+            message={
+              notesOnly
+                ? "No notes yet. Hold ~ and tap Q to dictate one."
+                : "No local transcript records match this view yet."
+            }
+          />
         ) : null}
         {!historyLoading && transcripts.length > 0 ? (
           <div className="transcript-list history-scroll">
@@ -1769,7 +1790,7 @@ const hotkeyActionLabels: Record<string, string> = {
 
 const hotkeyActionHints: Record<string, string> = {
   holdToTalk: "Hold to record, release to transcribe",
-  toggleDictation: "Press once to start, again to stop",
+  toggleDictation: "Acts on release; hold it and tap Q to dictate a note",
   pasteLastTranscript: "Insert the Last Transcript Buffer",
   openDashboard: "Bring up this dashboard",
 };
@@ -3662,11 +3683,15 @@ function transcriptTitle(transcript: Transcript) {
 }
 
 function transcriptMeta(transcript: Transcript) {
-  return [
+  const parts = [
     formatCount(transcript.wordCount, "word"),
     transcript.modelId ?? "No model",
     formatDuration(transcript.durationMs),
-  ].join(" | ");
+  ];
+  if (transcript.isNote) {
+    parts.unshift("Note");
+  }
+  return parts.join(" | ");
 }
 
 export default App;

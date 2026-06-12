@@ -13,6 +13,7 @@ use crate::{
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
 const AUDIO_CLIPS_MIGRATION: &str = include_str!("../migrations/002_audio_clips.sql");
+const NOTES_MIGRATION: &str = include_str!("../migrations/003_notes.sql");
 const SETTINGS_KEY: &str = "app_settings";
 const LAST_TRANSCRIPT_ID_KEY: &str = "last_transcript_id";
 const LAST_TRANSCRIPT_BUFFER_KEY: &str = "last_transcript_buffer";
@@ -71,7 +72,7 @@ impl Database {
             .prepare(
                 "SELECT id, text, created_at, duration_ms, word_count, character_count,
                         model_id, language, output_mode, paste_method, transcription_latency_ms,
-                        audio_path
+                        audio_path, is_note
                  FROM transcripts
                  ORDER BY created_at DESC
                  LIMIT ?1",
@@ -89,19 +90,24 @@ impl Database {
     pub fn search_transcripts(
         &self,
         query: Option<&str>,
+        notes_only: bool,
         limit: u32,
         offset: u32,
     ) -> Result<TranscriptSearchResult, CommandError> {
         let normalized_query = query.map(str::trim).filter(|query| !query.is_empty());
+        let note_filter = if notes_only { " AND is_note = 1" } else { "" };
 
         let (transcripts, total) = if let Some(query) = normalized_query {
             let pattern = format!("%{}%", escape_like_query(query));
             let total: i64 = self
                 .conn
                 .query_row(
-                    "SELECT COUNT(*)
-                     FROM transcripts
-                     WHERE text LIKE ?1 ESCAPE '\\'",
+                    &format!(
+                        "SELECT COUNT(*)
+                         FROM transcripts
+                         WHERE text LIKE ?1 ESCAPE '\\'{}",
+                        note_filter
+                    ),
                     [&pattern],
                     |row| row.get(0),
                 )
@@ -109,15 +115,16 @@ impl Database {
 
             let mut stmt = self
                 .conn
-                .prepare(
+                .prepare(&format!(
                     "SELECT id, text, created_at, duration_ms, word_count, character_count,
                             model_id, language, output_mode, paste_method, transcription_latency_ms,
-                            audio_path
+                            audio_path, is_note
                      FROM transcripts
-                     WHERE text LIKE ?1 ESCAPE '\\'
+                     WHERE text LIKE ?1 ESCAPE '\\'{}
                      ORDER BY created_at DESC
                      LIMIT ?2 OFFSET ?3",
-                )
+                    note_filter
+                ))
                 .map_err(CommandError::database)?;
 
             let rows = stmt
@@ -130,21 +137,28 @@ impl Database {
                 total,
             )
         } else {
+            let where_clause = if notes_only { "WHERE is_note = 1" } else { "" };
             let total: i64 = self
                 .conn
-                .query_row("SELECT COUNT(*) FROM transcripts", [], |row| row.get(0))
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM transcripts {}", where_clause),
+                    [],
+                    |row| row.get(0),
+                )
                 .map_err(CommandError::database)?;
 
             let mut stmt = self
                 .conn
-                .prepare(
+                .prepare(&format!(
                     "SELECT id, text, created_at, duration_ms, word_count, character_count,
                             model_id, language, output_mode, paste_method, transcription_latency_ms,
-                            audio_path
+                            audio_path, is_note
                      FROM transcripts
+                     {}
                      ORDER BY created_at DESC
                      LIMIT ?1 OFFSET ?2",
-                )
+                    where_clause
+                ))
                 .map_err(CommandError::database)?;
 
             let rows = stmt
@@ -216,6 +230,14 @@ impl Database {
     }
 
     #[allow(dead_code)]
+    /// Saves a note transcript to history only: notes never replace the Last
+    /// Transcript Buffer (Ctrl+Alt+V should keep pasting the last dictation),
+    /// and they are saved even with history disabled - taking a note is an
+    /// explicit ask to keep it.
+    pub fn save_note_transcript(&self, transcript: &Transcript) -> Result<(), CommandError> {
+        self.insert_transcript(transcript)
+    }
+
     pub fn save_last_transcript(&self, transcript: &Transcript) -> Result<(), CommandError> {
         self.save_last_transcript_with_history(transcript, true)
     }
@@ -389,8 +411,8 @@ impl Database {
                 "INSERT OR REPLACE INTO transcripts (
                     id, text, created_at, duration_ms, word_count, character_count,
                     model_id, language, output_mode, paste_method, transcription_latency_ms,
-                    audio_path
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    audio_path, is_note
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     transcript.id,
                     transcript.text,
@@ -404,6 +426,7 @@ impl Database {
                     transcript.paste_method.as_ref().map(enum_to_json_string),
                     transcript.transcription_latency_ms,
                     transcript.audio_path,
+                    transcript.is_note,
                 ],
             )
             .map_err(CommandError::database)?;
@@ -416,7 +439,7 @@ impl Database {
             .query_row(
                 "SELECT id, text, created_at, duration_ms, word_count, character_count,
                         model_id, language, output_mode, paste_method, transcription_latency_ms,
-                        audio_path
+                        audio_path, is_note
                  FROM transcripts
                  WHERE id = ?1",
                 [id],
@@ -555,6 +578,11 @@ fn apply_migrations(conn: &Connection) -> Result<(), CommandError> {
             return Err(CommandError::database(error));
         }
     }
+    if let Err(error) = conn.execute_batch(NOTES_MIGRATION) {
+        if !error.to_string().contains("duplicate column name") {
+            return Err(CommandError::database(error));
+        }
+    }
     Ok(())
 }
 
@@ -590,6 +618,7 @@ fn transcript_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Transcript> 
         paste_method: optional_enum_from_json(row.get(9)?),
         transcription_latency_ms: row.get(10)?,
         audio_path: row.get(11)?,
+        is_note: row.get::<_, Option<bool>>(12)?.unwrap_or(false),
     })
 }
 
@@ -666,6 +695,27 @@ mod tests {
             Some("en".to_string()),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn notes_only_search_filters_regular_transcripts() {
+        let db = Database::in_memory().unwrap();
+        db.save_last_transcript(&transcript_with_text("regular dictation"))
+            .unwrap();
+        let mut note = transcript_with_text("note to self");
+        note.is_note = true;
+        db.save_last_transcript(&note).unwrap();
+
+        let notes = db.search_transcripts(None, true, 10, 0).unwrap();
+        assert_eq!(notes.total, 1);
+        assert_eq!(notes.transcripts[0].text, "note to self");
+        assert!(notes.transcripts[0].is_note);
+
+        let all = db.search_transcripts(None, false, 10, 0).unwrap();
+        assert_eq!(all.total, 2);
+
+        let queried = db.search_transcripts(Some("note"), true, 10, 0).unwrap();
+        assert_eq!(queried.total, 1);
     }
 
     /// A transcript plus a real on-disk clip file (the transcript id keeps
@@ -762,7 +812,7 @@ mod tests {
         db.save_last_transcript(&third).unwrap();
 
         let result = db
-            .search_transcripts(Some("alpha"), 1, 0)
+            .search_transcripts(Some("alpha"), false, 1, 0)
             .expect("search should work");
 
         assert_eq!(result.total, 2);
@@ -770,7 +820,7 @@ mod tests {
         assert_eq!(result.offset, 0);
         assert_eq!(result.transcripts.len(), 1);
 
-        let second_page = db.search_transcripts(Some("alpha"), 1, 1).unwrap();
+        let second_page = db.search_transcripts(Some("alpha"), false, 1, 1).unwrap();
         assert_eq!(second_page.total, 2);
         assert_eq!(second_page.transcripts.len(), 1);
     }
@@ -813,7 +863,7 @@ mod tests {
         db.save_last_transcript(&recent).unwrap();
         db.enforce_history_retention(Some(30)).unwrap();
 
-        let result = db.search_transcripts(None, 10, 0).unwrap();
+        let result = db.search_transcripts(None, false, 10, 0).unwrap();
         assert_eq!(result.total, 1);
         assert_eq!(result.transcripts[0].id, recent.id);
         assert_eq!(db.get_last_transcript().unwrap().unwrap().id, recent.id);
@@ -941,7 +991,7 @@ mod tests {
 
         db.enforce_history_retention(None).unwrap();
 
-        assert_eq!(db.search_transcripts(None, 10, 0).unwrap().total, 1);
+        assert_eq!(db.search_transcripts(None, false, 10, 0).unwrap().total, 1);
         assert_eq!(db.get_last_transcript().unwrap().unwrap().id, old.id);
     }
 }

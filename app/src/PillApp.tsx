@@ -208,6 +208,7 @@ function PillApp() {
     text: string;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [noteSession, setNoteSession] = useState(false);
   const settingsRef = useRef<AppSettings | null>(null);
   const positionedRef = useRef(false);
   const sizedLayoutRef = useRef<PillLayout | null>(null);
@@ -298,10 +299,11 @@ function PillApp() {
           });
           setCopied(false);
         }),
-        listen("audio://recording-started", () => {
+        listen<{ isNote: boolean }>("audio://recording-started", (event) => {
           setPartial(null);
           setConfirmation(null);
           setCopied(false);
+          setNoteSession(event.payload.isNote === true);
         }),
       ]);
 
@@ -607,9 +609,17 @@ function PillApp() {
   const partialText = partial?.text.trim() ?? "";
   const label = pillLabel(appState);
 
+  const noteTone =
+    noteSession &&
+    !confirming &&
+    (isRecording ||
+      status === "Stopping" ||
+      status === "Transcribing" ||
+      status === "Pasting");
+
   return (
     <div
-      className={`pill-shell ${pillTone(appState.status)} layout-${layout}`}
+      className={`pill-shell ${pillTone(appState.status)} layout-${layout}${noteTone ? " note-session" : ""}`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
