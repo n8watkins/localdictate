@@ -68,6 +68,10 @@ export type AppSettings = {
   notesAnalysisPrompt: string;
   notesAnalysisEndpoint: string;
   notesAnalysisModel: string;
+  driveSyncEnabled: boolean;
+  driveSyncAllTranscripts: boolean;
+  driveOrganizeHour: number;
+  driveAccountEmail: string;
   hotkeys: HotkeySettings;
   pillX: number | null;
   pillY: number | null;
@@ -491,6 +495,40 @@ export function checkForUpdate(): Promise<UpdateCheckResult> {
  * local LLM server; returns the transcript with its stored analysis. */
 export function analyzeNote(transcriptId: string): Promise<Transcript> {
   return invoke("analyze_note", { transcriptId });
+}
+
+export type GoogleStatus = {
+  configured: boolean;
+  signedIn: boolean;
+  email: string;
+};
+
+export type DriveSyncReport = {
+  syncedNotes: number;
+  filesWritten: number;
+};
+
+/** Reports whether this build is configured for Google Drive sync and the
+ * current sign-in state. */
+export function googleStatus(): Promise<GoogleStatus> {
+  return invoke("google_status");
+}
+
+/** Opens a browser for Google OAuth; can take up to a minute while the user
+ * consents. Returns the full updated settings with the account email filled in. */
+export function googleSignIn(): Promise<AppSettings> {
+  return invoke("google_sign_in");
+}
+
+/** Clears the stored Google account; returns the full updated settings
+ * (email back to "", driveSyncEnabled false). */
+export function googleSignOut(): Promise<AppSettings> {
+  return invoke("google_sign_out");
+}
+
+/** Syncs notes (and optionally all transcripts) to Google Drive now. */
+export function driveSyncNow(): Promise<DriveSyncReport> {
+  return invoke("drive_sync_now");
 }
 
 export function openReleasePage(url?: string): Promise<void> {
