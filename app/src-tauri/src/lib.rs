@@ -5,6 +5,8 @@ pub mod db;
 pub mod dictation;
 pub mod error;
 pub mod file_transcribe;
+pub mod google_drive;
+pub mod google_oauth;
 pub mod hotkeys;
 pub mod incremental;
 pub mod model_manager;
@@ -226,7 +228,11 @@ pub fn run() {
             commands::delete_model,
             commands::select_model,
             commands::check_for_update,
-            commands::open_release_page
+            commands::open_release_page,
+            commands::google_status,
+            commands::google_sign_in,
+            commands::google_sign_out,
+            commands::drive_sync_now
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

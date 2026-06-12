@@ -467,6 +467,116 @@ pub fn open_release_page(app: tauri::AppHandle, url: Option<String>) -> Result<(
         .map_err(|error| CommandError::new("open_url_failed", error.to_string()))
 }
 
+/// Sign-in / configuration status for the Settings → Integrations panel.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleStatus {
+    /// This build has a real OAuth client baked in (not the placeholder).
+    pub configured: bool,
+    /// A refresh token is present in the keychain and an email is on record.
+    pub signed_in: bool,
+    /// The signed-in account email (empty when signed out).
+    pub email: String,
+}
+
+#[tauri::command]
+pub fn google_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+) -> Result<GoogleStatus, CommandError> {
+    let email = state.db()?.get_settings()?.drive_account_email;
+    let service = app.config().identifier.clone();
+    Ok(GoogleStatus {
+        configured: crate::google_oauth::is_configured(),
+        signed_in: !email.is_empty() && crate::google_oauth::has_stored_token(&service),
+        email,
+    })
+}
+
+/// Runs the interactive Google sign-in (opens the browser, catches the loopback
+/// redirect, stores the refresh token in the keychain) and records the
+/// signed-in email in settings. Returns the updated settings so the frontend
+/// adopts the email without a clobbering round-trip.
+#[tauri::command]
+pub async fn google_sign_in(app: tauri::AppHandle) -> Result<AppSettings, CommandError> {
+    let service = app.config().identifier.clone();
+    let opener_app = app.clone();
+    let email = tauri::async_runtime::spawn_blocking(move || {
+        crate::google_oauth::authorize(&service, |url| {
+            opener_app
+                .opener()
+                .open_url(url.to_string(), None::<&str>)
+                .map_err(|error| CommandError::new("open_url_failed", error.to_string()))
+        })
+    })
+    .await
+    .map_err(|error| CommandError::new("google_auth_failed", error.to_string()))??;
+
+    let state = app.state::<BackendState>();
+    let mut settings = state.db()?.get_settings()?;
+    settings.drive_account_email = email;
+    state.db()?.save_settings(&settings)?;
+    Ok(settings)
+}
+
+/// Clears the stored Google refresh token and turns Drive sync off. Returns the
+/// updated settings.
+#[tauri::command]
+pub async fn google_sign_out(app: tauri::AppHandle) -> Result<AppSettings, CommandError> {
+    let service = app.config().identifier.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::google_oauth::sign_out(&service))
+        .await
+        .map_err(|error| CommandError::new("google_auth_failed", error.to_string()))??;
+
+    let state = app.state::<BackendState>();
+    let mut settings = state.db()?.get_settings()?;
+    settings.drive_account_email = String::new();
+    settings.drive_sync_enabled = false;
+    state.db()?.save_settings(&settings)?;
+    Ok(settings)
+}
+
+/// Pushes the current notes (or all transcripts, per the toggle) to Google
+/// Drive as dated Markdown, creating the folder structure as needed. The daily
+/// files are regenerated from the DB, so this is safe to run repeatedly.
+#[tauri::command]
+pub async fn drive_sync_now(
+    app: tauri::AppHandle,
+) -> Result<crate::google_drive::SyncReport, CommandError> {
+    let service = app.config().identifier.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<BackendState>();
+        let (settings, notes) = {
+            let db = state.db()?;
+            let settings = db.get_settings()?;
+            let notes_only = !settings.drive_sync_all_transcripts;
+            let result = db.search_transcripts(None, notes_only, 100_000, 0)?;
+            (settings, result.transcripts)
+        };
+
+        if settings.drive_account_email.is_empty()
+            && !crate::google_oauth::has_stored_token(&service)
+        {
+            return Err(CommandError::new(
+                "google_not_signed_in",
+                "Sign in to Google in Settings → Integrations first.",
+            ));
+        }
+        if notes.is_empty() {
+            return Ok(crate::google_drive::SyncReport {
+                synced_notes: 0,
+                files_written: 0,
+            });
+        }
+
+        let token = crate::google_oauth::access_token(&service)?;
+        let drive = crate::google_drive::Drive::new(token)?;
+        drive.sync_notes(&notes)
+    })
+    .await
+    .map_err(|error| CommandError::new("drive_sync_failed", error.to_string()))?
+}
+
 fn open_folder(app: &tauri::AppHandle, dir: std::path::PathBuf) -> Result<(), CommandError> {
     std::fs::create_dir_all(&dir).map_err(|error| {
         CommandError::new(

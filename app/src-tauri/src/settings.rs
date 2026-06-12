@@ -71,6 +71,23 @@ pub struct AppSettings {
     /// which on LM Studio is whatever model is loaded.
     #[serde(default)]
     pub notes_analysis_model: String,
+    /// Sync dictated notes to Google Drive as dated Markdown files. Off until
+    /// the user signs in and enables it. The OAuth refresh token lives in the
+    /// OS keychain (see `google_oauth.rs`), never in this JSON.
+    #[serde(default)]
+    pub drive_sync_enabled: bool,
+    /// Also back up every transcript (not just notes) as text. Default off;
+    /// text is tiny (~40 MB/yr) but the owner opts in explicitly.
+    #[serde(default)]
+    pub drive_sync_all_transcripts: bool,
+    /// Hour of day (0-23, local time) the end-of-day organize / weekly passes
+    /// run. Used from Phase 3 on; stored now so the setting is stable.
+    #[serde(default = "default_drive_organize_hour")]
+    pub drive_organize_hour: u32,
+    /// Email of the signed-in Google account, for display only. Empty when
+    /// signed out. The tokens themselves live in the OS keychain.
+    #[serde(default)]
+    pub drive_account_email: String,
     /// Saved floating pill window position (physical pixels). None means the
     /// frontend places the pill at its bottom-center default.
     #[serde(default)]
@@ -109,6 +126,12 @@ fn default_notes_analysis_prompt() -> String {
 fn default_notes_analysis_endpoint() -> String {
     // LM Studio's local server default.
     "http://127.0.0.1:1234/v1".to_string()
+}
+
+fn default_drive_organize_hour() -> u32 {
+    // 3 AM: late enough that the day's notes are in, unlikely to clash with
+    // gaming/VRAM use.
+    3
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +249,10 @@ impl Default for AppSettings {
             notes_analysis_prompt: default_notes_analysis_prompt(),
             notes_analysis_endpoint: default_notes_analysis_endpoint(),
             notes_analysis_model: String::new(),
+            drive_sync_enabled: false,
+            drive_sync_all_transcripts: false,
+            drive_organize_hour: default_drive_organize_hour(),
+            drive_account_email: String::new(),
             pill_x: None,
             pill_y: None,
             hotkeys: HotkeySettings::default(),
