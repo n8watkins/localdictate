@@ -1,147 +1,149 @@
-# LocalDictate — Google Integration & Cloud Analysis Plan
+# LocalDictate — Google Drive Sync Plan (Gemini PINNED)
 
-Status: PLANNED (not started). Written 2026-06-12.
-Owner vision captured from a planning conversation; this is the implementation
-blueprint, not yet code. Read `docs/HANDOFF.md` for current project state.
+Status: PLANNED (not started). Written 2026-06-12, refined same day with owner
+decisions. Read `docs/HANDOFF.md` for current project state.
+
+## Scope right now
+
+**BUILD: Google Drive notes sync.** **PIN: Gemini cloud analysis** — the owner
+explicitly does not want to work on the Gemini BYO-key provider right now (see
+"Pinned" at the bottom; it's still a good future feature). The end-of-day
+"organize my notes" LLM pass uses the **existing LOCAL LLM** (the notes-analysis
+provider already shipped), NOT Gemini.
 
 ## Goal / product intent
 
-Make LocalDictate an "awesome free tool" that works whether or not the user can
-run a local LLM:
+Immediately push every dictated note to Google Drive, organized by date, so the
+owner can reference them from his other tools. Then, at end of day / end of
+week, have the local LLM reorganize and summarize. "Awesome free tool" — runs on
+the user's own Google account, text only, comfortably inside the free 15 GB.
 
-1. **Cloud analysis option (Gemini, bring-your-own-key).** People who can't
-   afford / don't want to run a local model can paste their *own* free Google
-   AI Studio API key and have Gemini analyze their notes. We do NOT resell
-   tokens or get into billing — the user's key, the user's quota. They pick the
-   Gemini model; we surface their token usage and link out to Google's usage
-   page.
-2. **Google Drive sync of notes.** Push notes to a Drive folder
-   ("LocalDictate Voice Notes") so the owner can reference them from his other
-   tools — organized by daily timestamps.
-3. **Minimal background footprint.** The local LLM should not have to run all
-   day; LocalDictate itself is the only required always-on process (for
-   hotkeys). Cloud users run nothing locally.
+## Storage findings (measured 2026-06-12, stable DB)
 
-Non-goals: reselling LLM access; a hosted backend; the owner's separate
-"one hotkey launches my apps" idea (unrelated — track elsewhere).
+In ~1 day of heavy use: **477 transcripts**, 5 notes.
+- Transcript **text**: 116 KB/day → ~**40 MB/year**. Trivial vs 15 GB free.
+- Audio **clips**: 267 MB/day → ~**97 GB/year** → blows the free tier in ~8
+  weeks. **DECISION: never sync audio to Drive. Text only.** Audio stays local.
+- So syncing even ALL transcripts (not just notes) as text is free-tier-safe.
 
-## Background footprint — answers to the owner's questions
+## Drive layout (owner-decided)
 
-- **Local LLM does NOT need to run constantly.** LM Studio's
-  **JIT load + Max idle TTL** (already configured; set TTL ~5 min) loads the
-  model on demand and unloads it from VRAM after idle. Good for gaming —
-  VRAM frees itself.
-- **Headless is the right way to keep it always-available.** LM Studio
-  Settings → Developer → **"Enable Local LLM Service (headless)"** runs the
-  server as a background service WITHOUT the GUI app open. Turn it on and never
-  open the LM Studio window.
-- **Gemini users run zero local processes** — the biggest footprint win.
-- **LocalDictate stays always-on** (tray) because the global hotkeys require a
-  live process. Already minimizes to tray.
+```
+LocalDictate Voice Notes/            (root app folder, scope drive.file)
+  2026-06/                           (one folder per MONTH, named YYYY-MM)
+    2026-06-12.md                    (daily log — appended live on each save)
+    2026-06-12-organized.md          (end-of-day LLM-reorganized version)
+    2026-W24-summary.md              (weekly summary of the week's dailies)
+```
 
-## Feature 1 — Pluggable analysis provider (Local | Gemini BYO-key)
+- **Folder per month** (`YYYY-MM`) so we never have one giant flat folder.
+- **Daily file** `YYYY-MM-DD.md`: appended to on **every note save** (auto-sync).
+  Each entry holds the **raw transcript AND its summary** + a timestamp.
+- **Two versions per day** (owner wants original + summary, and an organized
+  view):
+  - `YYYY-MM-DD.md` — chronological live log (raw + per-note summary).
+  - `YYYY-MM-DD-organized.md` — produced/updated by the **end-of-day** local-LLM
+    pass: arbitrary categorization, category titles, restructured to "make
+    sense." This is a fresh read of the day's notes → reorganized file.
+- **Weekly** `YYYY-Www-summary.md`: once a week, local LLM summarizes the week's
+  organized dailies into one file.
+- Endless files are fine (text is tiny); the month folders keep it tidy.
 
-Today `app/src-tauri/src/note_analysis.rs::analyze_text` is hardcoded to an
-OpenAI-compatible `/chat/completions` call (LM Studio / Ollama). Generalize it
-to a provider dimension.
+## Sync behavior (owner-decided)
 
-### Settings (settings.rs / backend.ts / App.tsx)
-New fields (all `#[serde(default)]`, bump `CURRENT_DEFAULTS_VERSION` only if a
-shipped default changes):
-- `notesAnalysisProvider`: `"local"` | `"gemini"` (default `"local"`).
-- `notesAnalysisGeminiModel`: e.g. `"gemini-2.5-flash"` (default empty → pick).
-- Gemini **API key is a SECRET** → store in the OS keychain (Windows Credential
-  Manager via the `keyring` crate), NOT in the SQLite settings JSON. Settings
-  holds only a boolean "key is set".
+- **Auto-sync on every save** (no manual-only mode needed). At ~477/day we are
+  nowhere near any Drive rate limit; this is plain file appends.
+- **Sync notes** to the dated files. SEPARATELY, optionally, a **full-transcript
+  text backup** is cheap (~40 MB/yr) — offer it as a toggle ("back up all
+  transcripts, not just notes"), default off. Still text-only, never audio.
+- Append = read-modify-write the daily file (or cache its Drive file id and
+  fetch-append-update). Keep the file id per day to avoid re-listing.
 
-### Backend
-- Refactor `note_analysis.rs` into a small provider enum:
-  - `local`: existing OpenAI-compatible path (unchanged).
-  - `gemini`: POST
-    `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEY}`
-    body `{ "system_instruction": {parts:[{text: prompt}]},
-    "contents":[{parts:[{text: note}]}] }`; parse
-    `candidates[0].content.parts[0].text`. reqwest is `default-features=false`,
-    so use `.text()` + serde_json (same as the existing code).
-  - Capture `usageMetadata.{promptTokenCount,candidatesTokenCount,totalTokenCount}`.
-- New command `list_gemini_models(key)` → `GET /v1beta/models?key=` filtered to
-  models supporting `generateContent`, for the UI dropdown.
-- New command `test_analysis_connection` (works for both providers).
-- Persist usage: add columns/table for cumulative tokens + request count
-  (extend `app_stats_daily` or a new `analysis_usage` table). Return to UI.
+## End-of-day / weekly scheduling (needs design)
 
-### Frontend (App.tsx Settings → Notes analysis)
-- Provider selector (Local / Gemini). Conditionally render:
-  - Local → existing endpoint + model fields.
-  - Gemini → API-key field (write-only, shows "set/not set"), model dropdown
-    (populated by `list_gemini_models`), "Get a free key" link to AI Studio.
-- "Test connection" button.
-- Usage readout (tokens this session/total) + link to Google's usage page.
-  We track tokens locally; we canNOT read dollar billing without the heavy
-  Cloud Billing API — link out for cost.
+The reorganize + weekly passes must fire "at a certain point in the day." This
+ties to the footprint discussion:
+- The **local LLM must be reachable** when the pass runs. Recommend the LM Studio
+  **headless service** (Settings → Developer → "Enable Local LLM Service") so the
+  server is up without the GUI; JIT-load + ~5 min TTL means the model only
+  occupies VRAM during the pass, then unloads.
+- A scheduler inside LocalDictate (it's always-on in the tray): e.g. a daily
+  timer at a configurable hour → run organize for that day; a weekly timer →
+  weekly summary. Guard against firing mid-game (configurable hour, e.g. 3am, or
+  "only when idle"). If the local server is down, skip + retry next tick.
 
-## Feature 2 — Google Drive notes sync
+## OAuth — how a desktop app does this
 
-New **Integrations** tab in Settings (decided long ago: plain Drive REST +
-OAuth, NOT MCP).
+The owner asked "how do we even do OAuth for a local app?" Answer:
+- **Desktop OAuth 2.0 with loopback redirect + PKCE.** Register an OAuth client
+  of type "Desktop app" in Google Cloud Console under the project. Ship its
+  **client ID** with the app (desktop client secrets are not really secret;
+  PKCE covers it).
+- Flow: app opens the system browser to Google's consent page → user signs in →
+  Google redirects to `http://127.0.0.1:<random port>` which the app is
+  listening on → app catches the auth code → exchanges for access + refresh
+  tokens.
+- **Scope: `drive.file` ONLY** (app-created files). Least privilege AND it keeps
+  us out of Google's restricted-scope security assessment.
+- Until the OAuth consent screen is verified by Google, users see an
+  "unverified app" warning (fine for the owner + early users; verify the brand
+  later for a clean experience when distributing widely).
+- **Store the refresh token in the OS keychain** (Windows Credential Manager via
+  the `keyring` crate), NOT plaintext SQLite.
 
-### OAuth (the fiddly part)
-- Desktop OAuth 2.0 with **loopback redirect + PKCE** (no real client secret;
-  desktop secrets aren't secret). Embed a client ID shipped with the app.
-- Scope **`drive.file` ONLY** — app-created files. Least privilege AND it keeps
-  us out of Google's restricted-scope security assessment, which matters for
-  distributing free to others.
-- Store the **refresh token in the OS keychain** (keyring crate), never SQLite.
-- Flow: open system browser → user consents → loopback catches the code →
-  exchange for tokens → refresh as needed.
+## Implementation sketch
 
-### Sync behavior
-- Find/create a Drive folder **"LocalDictate Voice Notes"** (remember its id).
-- On note save and/or analyze, upload. **Default layout: one Markdown file per
-  day** (`YYYY-MM-DD.md`), each note appended as a timestamped section
-  (download-modify-upload, or keep a daily file id). Configurable alternative:
-  one file per note (`YYYY-MM-DD_HHMMSS_<slug>.md`) — simpler, no
-  read-modify-write.
-- Include note text + analysis (if present) + timestamp.
-- A manual "Sync now / backfill" button plus optional auto-on-save.
-- Enable/disable toggle; clear "signed in as <email> / Sign out".
+Backend (`app/src-tauri/src/`):
+- `google_oauth.rs` — PKCE loopback flow, token refresh, keychain storage.
+- `google_drive.rs` — folder ensure/create, file create/append/update, the
+  daily/organized/weekly writers.
+- `note_sync.rs` (or extend existing) — on note save, format + enqueue upload.
+- Scheduler — daily/weekly timers (reuse the always-on app process).
+- `lib.rs` — register commands; wire note-save hook to the uploader.
+- Settings: `driveSyncEnabled`, `driveSyncAllTranscripts` (default off),
+  `driveOrganizeHour`, signed-in email (display only). Secrets → keychain.
 
-### Files touched
-- New `app/src-tauri/src/google_oauth.rs`, `google_drive.rs`.
-- `lib.rs`: register new commands.
-- `backend.ts`: wrappers/types.
-- `App.tsx`: new Integrations tab.
+Frontend (`app/src/`):
+- New **Integrations** tab in Settings: Sign in with Google / signed-in-as /
+  sign out; enable sync; "also back up all transcripts" toggle; organize hour;
+  "Sync now / backfill" button; last-sync status.
+- `backend.ts` — wrappers/types.
+
+Reuse note: the existing local notes-analysis path
+(`note_analysis.rs::analyze_text`) is what powers per-note summaries and the
+end-of-day organize pass — no new LLM provider needed.
 
 ## Phasing
 
-1. **Provider abstraction + Gemini BYO-key** — self-contained, immediately
-   useful, no OAuth. Ship behind the existing notes-analysis UI.
-2. **Drive sync** — own branch; OAuth + Drive client + Integrations tab.
-3. **Polish** — usage display, headless docs, per-integration disable toggles,
-   "sync now / backfill".
+1. **OAuth + Drive plumbing**: sign-in, ensure folder, write today's daily file
+   on note save (raw + summary). Manual "sync now" first to prove it.
+2. **Auto-sync on save** + month-folder organization + per-day file ids.
+3. **End-of-day organize pass** (local LLM → `-organized.md`) + scheduler.
+4. **Weekly summary** + optional full-transcript backup toggle.
 
-## Decisions (owner may override)
+## Decisions locked (owner)
 
-- Secrets (Gemini key, Google refresh token) → **OS keychain** (`keyring`
-  crate), not plaintext SQLite. Matters because the app is distributed.
-- Drive scope = **`drive.file`** (avoids Google verification).
-- Drive layout = **daily Markdown rollup** files (referenceable), configurable.
+- Drive layout: month folders (`YYYY-MM`), daily files, daily `-organized`
+  version, weekly summary. Both raw + summary stored.
+- Auto-sync on every save.
+- Sync notes; offer optional all-transcripts text backup (default off).
+- **Text only — NEVER audio** (would be ~97 GB/yr; text is ~40 MB/yr).
+- Ship an OAuth Desktop client ID with the app; scope `drive.file`; refresh
+  token in OS keychain.
 
-## Open questions to confirm before building
+## PINNED for later — Gemini BYO-key analysis
 
-- Drive: daily-rollup file vs one-file-per-note as the default?
-- Auto-sync every note on save, or manual "sync now" only?
-- Sync just notes, or full transcripts too?
-- Distribute one shared Google OAuth client ID with the app, or document how
-  each user creates their own? (Shared is friendlier; needs an unverified-app
-  consent screen or going through Google verification for the brand.)
+Not now, per owner. Future: add `notesAnalysisProvider` = local | gemini;
+user pastes their own free AI Studio key (no reselling); model picker via
+`GET /v1beta/models`; track `usageMetadata` tokens; key in keychain. Self-
+contained, no OAuth — good standalone phase when revisited.
 
 ## Cross-cutting reminders (from HANDOFF.md)
 
-- Windows verification is mandatory for Rust changes; test on the **Dev flavor**
-  first, ship to stable only on owner request.
-- New settings fields need `#[serde(default)]`; changed shipped defaults go
-  through `CURRENT_DEFAULTS_VERSION` + `migrate_defaults`.
+- Windows verification mandatory for Rust; test on the **Dev flavor** first,
+  ship to stable only on owner request.
+- New settings need `#[serde(default)]`; changed shipped defaults go through
+  `CURRENT_DEFAULTS_VERSION` + `migrate_defaults`.
 - reqwest is `default-features = false`: no `.json()`, use `.text()` +
   serde_json.
 - Commit per logical change with the Co-Authored-By trailer.
