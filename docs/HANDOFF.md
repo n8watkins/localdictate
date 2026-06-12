@@ -112,15 +112,18 @@ and hasn't yet dictated a non-silent note (empty notes are never saved).
 - reqwest has `default-features = false`: no `.json()`, use `.text()` +
   serde_json (see `update_check.rs` and `note_analysis.rs`).
 - **Updater signing**: `createUpdaterArtifacts` makes every bundling
-  `npm run tauri build` REQUIRE a signing key. CI uses the
-  `TAURI_SIGNING_PRIVATE_KEY` repo secret (set 2026-06-12, passwordless);
-  manual Windows builds need
-  `set TAURI_SIGNING_PRIVATE_KEY=C:\Users\natha\.tauri\localdictate-updater.key`
-  (v2 accepts a path or the key content in that one variable — there is NO
-  `_PATH` variant; using one fails with "no private key" after bundling).
-  The key also lives at `~/.tauri/localdictate-updater.key` in WSL. Losing
-  it breaks updates for all shipped builds. Dev-flavor builds are
-  `--no-bundle`, so they never need the key.
+  `npm run tauri build` REQUIRE the signing key AND its password. CI uses
+  the `TAURI_SIGNING_PRIVATE_KEY` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+  repo secrets (rotated 2026-06-12; the key is password-protected because
+  Windows cannot represent an empty env var, so a passwordless key hangs
+  local builds at an interactive prompt). Key + password files live at
+  `~/.tauri/localdictate-updater.key{,.password}` in WSL and
+  `C:\Users\natha\.tauri\` on Windows. Local signed builds from WSL:
+  `export TAURI_SIGNING_PRIVATE_KEY='C:\Users\natha\.tauri\localdictate-updater.key' TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat ~/.tauri/localdictate-updater.password)" WSLENV=TAURI_SIGNING_PRIVATE_KEY/w:TAURI_SIGNING_PRIVATE_KEY_PASSWORD/w`
+  then run `cmd.exe /c "cd /d C:\...\app && npx tauri build"`. There is NO
+  `_PATH` env variant in Tauri v2 (the one variable takes a path or the key
+  content). Losing the key breaks updates for all shipped builds.
+  Dev-flavor builds are `--no-bundle`, so they never need the key.
 - **A running Dev-flavor instance shadow-captures the owner's keys**: its
   GetAsyncKeyState toggle watcher sees physical tilde presses meant for
   stable, silently records his mic, and races stable for the Q grab. Launch
