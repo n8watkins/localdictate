@@ -349,13 +349,6 @@ pub fn setup(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<(), CommandErr
 }
 
 pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
-    // TEMP-DIAG: trace every shortcut event end-to-end.
-    log::info!(
-        "Shortcut event: id={} key={:?} state={:?}",
-        shortcut.id(),
-        shortcut.key,
-        event.state
-    );
     let Some(runtime) = app.try_state::<HotkeyRuntimeState>() else {
         return;
     };
@@ -623,7 +616,7 @@ fn register_hotkey_set(
             Ok(ParsedShortcut::Plugin(shortcut)) => {
                 match app.global_shortcut().register(shortcut) {
                     Ok(()) => {
-                        log::info!(
+                        log::debug!(
                             "Registered {:?} as shortcut id={} key={:?} mods={:?}",
                             action,
                             shortcut.id(),
