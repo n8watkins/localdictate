@@ -71,7 +71,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip("LocalDictate - Idle")
+        .tooltip(format!("{} - Idle", crate::display_name(app)))
         // Left-click opens the dashboard (handled below); the menu stays on
         // right-click only.
         .show_menu_on_left_click(false)
@@ -248,7 +248,7 @@ pub(crate) fn update_tray_status(app: &AppHandle, status: AppStatus) {
     };
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(format!("LocalDictate - {}", label)));
+        let _ = tray.set_tooltip(Some(format!("{} - {}", crate::display_name(app), label)));
         let _ = tray.set_title(Some(label));
     }
 }

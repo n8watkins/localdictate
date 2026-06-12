@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getVersion as getAppVersion } from "@tauri-apps/api/app";
+import {
+  getName as getAppName,
+  getVersion as getAppVersion,
+} from "@tauri-apps/api/app";
 import { check as checkUpdaterPackage } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
@@ -229,6 +232,14 @@ function App() {
   const [microphones, setMicrophones] = useState<MicrophoneInfo[] | null>(null);
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [toast, setToast] = useState<ToastNotice | null>(null);
+  const [isDevFlavor, setIsDevFlavor] = useState(false);
+
+  // The dev flavor labels itself so two running instances are tellable apart.
+  useEffect(() => {
+    void getAppName()
+      .then((name) => setIsDevFlavor(name.includes("Dev")))
+      .catch(() => {});
+  }, []);
   const [liveTranscript, setLiveTranscript] =
     useState<PartialTranscriptEvent | null>(null);
   const soundsEnabledRef = useRef(false);
@@ -598,7 +609,10 @@ function App() {
         <div className="brand">
           <div className="brand-mark">LD</div>
           <div>
-            <div className="brand-name">LocalDictate</div>
+            <div className="brand-name">
+              LocalDictate
+              {isDevFlavor ? <span className="brand-badge">DEV</span> : null}
+            </div>
             <div className="brand-subtitle">Private local dictation</div>
           </div>
         </div>

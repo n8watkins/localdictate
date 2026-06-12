@@ -23,6 +23,21 @@ use commands::BackendState;
 use db::Database;
 use tauri::Manager;
 
+/// True when running the LocalDictate Dev flavor (identifier baked at build
+/// time by `tauri.dev-flavor.conf.json`).
+pub fn is_dev_flavor(app: &tauri::AppHandle) -> bool {
+    app.config().identifier.ends_with(".dev")
+}
+
+/// The flavored display name, used everywhere the UI says "LocalDictate".
+pub fn display_name(app: &tauri::AppHandle) -> &'static str {
+    if is_dev_flavor(app) {
+        "LocalDictate Dev"
+    } else {
+        "LocalDictate"
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -130,6 +145,13 @@ pub fn run() {
             app.manage(whisper_server::WarmTranscriber::new());
             hotkeys::setup(app.handle(), &settings.hotkeys)?;
             tray::setup(app.handle())?;
+            // The dev flavor must be tellable from stable at a glance: the
+            // window title (and taskbar entry) carries the flavored name.
+            if is_dev_flavor(app.handle()) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title("LocalDictate Dev");
+                }
+            }
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
                 style_native_titlebar(&window);

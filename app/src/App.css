@@ -83,6 +83,18 @@ button {
   color: #f8fafc;
 }
 
+.brand-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid rgba(34, 211, 238, 0.5);
+  border-radius: 4px;
+  color: #67e8f9;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  vertical-align: 1px;
+}
+
 .brand-subtitle {
   margin-top: 1px;
   color: #64748b;
