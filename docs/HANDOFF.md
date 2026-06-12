@@ -1,7 +1,8 @@
 # LocalDictate — Session Handoff
 
-Last updated: 2026-06-12 (notes-analysis + auto-updater session)
-Read this first, then `docs/STATUS_AND_NEXT_STEPS.md` for older project history.
+Last updated: 2026-06-12 (notes-analysis verified live + Google Drive plan)
+Read this first, then **`docs/GOOGLE_INTEGRATION_PLAN.md`** (the next big epic),
+then `docs/STATUS_AND_NEXT_STEPS.md` for older project history.
 
 ## Project summary
 
@@ -25,11 +26,39 @@ usually AT the machine during agent sessions.
   - **LocalDictate Dev** (`com.natkins.localdictate.dev`) — the agent's test
     app, own data dir/DB, runs side-by-side with stable.
 
+## This session (2026-06-12, later)
+
+- **Notes analysis verified working end-to-end against a live local LLM.** The
+  owner installed **LM Studio 0.4.16** and downloaded **Gemma 4** models
+  (`google/gemma-4-e4b` small/gaming-friendly, `google/gemma-4-26b-a4b-qat`
+  big MoE). Server confirmed serving on `http://127.0.0.1:1234/v1`; a real
+  chat-completion round-trip succeeded. Stable app settings now have
+  `notesAnalysisEnabled=true`, endpoint `…/v1`, model `google/gemma-4-e4b`.
+  **Recommended daily model: `google/gemma-4-e4b`** (fast, low VRAM). Set LM
+  Studio **Max idle TTL → 5 min** + JIT auto-evict (so VRAM frees for gaming);
+  the **headless** "Enable Local LLM Service" toggle lets the server run without
+  the GUI. NOTE: reaching the Windows LM Studio server from WSL needs the
+  Windows side — `cmd.exe /c "curl …"` or `powershell.exe Invoke-RestMethod`;
+  WSL `localhost` does NOT reach it.
+- The owner has NOT yet clicked the in-app **Sparkles** button on a real note
+  (only the API path is proven). A note needs the `` ` ``+Q chord; the test
+  dictation "Alright, I think it did it." came in as a normal transcript
+  (`isNote:false`), which is never analyzed.
+- **Correction to the note below:** the stable install is NO LONGER on
+  `b78e498` — it wrote `notesAnalysis*` settings today, so the running stable
+  binary already includes the notes-analysis feature (built after `b78e498`).
+  Treat "stable runs b78e498" as stale.
+- **New epic planned: Google Drive notes sync** — see
+  `docs/GOOGLE_INTEGRATION_PLAN.md` (commits `992264b`, `<this docs commit>`).
+  All product decisions are locked there. **Gemini cloud analysis is PINNED**
+  (owner doesn't want it now); the end-of-day "organize" pass uses the existing
+  LOCAL LLM. Measured storage: text ~40 MB/yr (fine on free 15 GB), audio
+  ~97 GB/yr (**never sync audio**).
+
 ## State
 
 Pushed through `b78e498`; commits after that are local-only until the owner
-asks to push. The stable install still runs `b78e498`. Session commits,
-newest first:
+asks to push. Session commits, newest first:
 
 | Commit | What |
 |---|---|
@@ -55,22 +84,20 @@ and hasn't yet dictated a non-silent note (empty notes are never saved).
 
 ## Next steps (priority order)
 
-1. **Owner verification of notes analysis** (built this session, runtime
-   decision was his: local OpenAI-compatible endpoint, LM Studio first).
-   He needs to: download a model in LM Studio, start its local server
-   (defaults to `http://127.0.0.1:1234/v1`), flip on Settings → Notes
-   analysis, dictate a note (tilde+Q), click the Sparkles button in Notes.
-   LM Studio is installed but had NO models and the server was off as of
-   2026-06-12. The client itself is covered by mock-server tests.
-2. **Ship + first updater release**: push when the owner asks, upgrade his
-   stable install (silent NSIS), and tag `v0.3.0` (bump versions in
+1. **Google Drive notes sync** — the active epic. Full blueprint with all
+   owner-locked decisions in **`docs/GOOGLE_INTEGRATION_PLAN.md`**; do NOT
+   re-ask anything it answers. Start with Phase 1 (OAuth desktop loopback+PKCE,
+   scope `drive.file`, ensure "LocalDictate Voice Notes" folder, write today's
+   daily `.md` on note save). Then auto-sync, month folders, end-of-day
+   local-LLM organize pass, weekly summary. Secrets → OS keychain, text only.
+2. **Confirm Sparkles in-app** (small): owner clicks Sparkles on a real
+   `` ` ``+Q note to verify the UI path (API path already proven this session).
+3. **Ship + first updater release**: push when the owner asks, upgrade his
+   stable install (silent NSIS), tag `v0.3.0` (bump versions in
    `tauri.conf.json` + `Cargo.toml` first) so CI publishes the first
-   release with `latest.json`. One-click install only works for updates
-   AFTER that release (his current 0.2.0 install predates the plugin and
-   must be upgraded manually one last time).
-3. Then: Google Drive sync of notes via a new Integrations tab (decided:
-   plain Drive REST + OAuth, NOT MCP); code signing (revisit when the owner
-   wants money spent — explained to him 2026-06-12).
+   `latest.json`. One-click updates only work AFTER that release.
+4. Later: **Gemini BYO-key analysis** (PINNED — see plan doc); code signing
+   (revisit when the owner wants money spent — explained 2026-06-12).
 
 ## Conventions & gotchas (hard-won — do not relearn these)
 
