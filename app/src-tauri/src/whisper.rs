@@ -200,16 +200,59 @@ fn parse_output_text(output_txt_path: &Path, stdout: &[u8]) -> Result<String, Co
 }
 
 /// Shared transcript normalization so the warm-server path and the CLI path
-/// produce identically trimmed text.
+/// produce identically trimmed text. Whisper's non-speech annotations are
+/// removed: silent audio otherwise types literal "[BLANK_AUDIO]" markers.
 pub(crate) fn normalize_transcript_text(raw_text: &str) -> String {
     raw_text
         .lines()
-        .map(str::trim)
+        .map(strip_noise_annotations)
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
-        .trim()
-        .to_string()
+}
+
+/// Drops whisper's bracketed/parenthesized non-speech annotations, e.g.
+/// "[BLANK_AUDIO]", "(silence)", "[Music]". Only known annotation words are
+/// removed so legitimately dictated brackets survive.
+fn strip_noise_annotations(line: &str) -> String {
+    const NOISE: [&str; 12] = [
+        "blank audio",
+        "silence",
+        "silent",
+        "music",
+        "applause",
+        "laughter",
+        "laughing",
+        "noise",
+        "inaudible",
+        "no audio",
+        "no speech",
+        "speaking in foreign language",
+    ];
+
+    let mut result = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find(['[', '(']) {
+        let close = if rest.as_bytes()[start] == b'[' { ']' } else { ')' };
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find(close) {
+            Some(end) => {
+                let inner = after[..end].trim().to_lowercase().replace('_', " ");
+                if !NOISE.contains(&inner.as_str()) {
+                    result.push_str(&rest[start..start + 1 + end + 1]);
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                result.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 #[cfg(test)]
@@ -240,6 +283,25 @@ mod tests {
                 "temp/out",
                 "--no-timestamps",
             ]
+        );
+    }
+
+    #[test]
+    fn noise_annotations_are_stripped() {
+        assert_eq!(normalize_transcript_text("[BLANK_AUDIO]"), "");
+        assert_eq!(normalize_transcript_text(" (silence) \n[Music]"), "");
+        assert_eq!(
+            normalize_transcript_text("Hello [BLANK_AUDIO] world."),
+            "Hello world."
+        );
+        assert_eq!(
+            normalize_transcript_text("Control. [blank audio]"),
+            "Control."
+        );
+        // Legitimate brackets survive.
+        assert_eq!(
+            normalize_transcript_text("Use array[0] and (see notes)."),
+            "Use array[0] and (see notes)."
         );
     }
 
