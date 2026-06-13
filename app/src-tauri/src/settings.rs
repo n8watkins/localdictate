@@ -84,6 +84,19 @@ pub struct AppSettings {
     /// run. Used from Phase 3 on; stored now so the setting is stable.
     #[serde(default = "default_drive_organize_hour")]
     pub drive_organize_hour: u32,
+    /// Run the end-of-day pass: at `drive_organize_hour`, the local LLM
+    /// reorganizes the previous day's notes into a `{day}-organized.md` Drive
+    /// file. Opt-in (needs the local LLM running).
+    #[serde(default)]
+    pub drive_organize_enabled: bool,
+    /// Instruction sent to the local LLM as the system prompt for the
+    /// end-of-day organize pass (the day's notes are the user message).
+    #[serde(default = "default_drive_organize_prompt")]
+    pub drive_organize_prompt: String,
+    /// The last local calendar day (YYYY-MM-DD) already organized, so the
+    /// scheduler doesn't redo it. Empty until the first pass runs.
+    #[serde(default)]
+    pub drive_last_organized_date: String,
     /// Email of the signed-in Google account, for display only. Empty when
     /// signed out. The tokens themselves live in the OS keychain.
     #[serde(default)]
@@ -132,6 +145,13 @@ fn default_drive_organize_hour() -> u32 {
     // 3 AM: late enough that the day's notes are in, unlikely to clash with
     // gaming/VRAM use.
     3
+}
+
+fn default_drive_organize_prompt() -> String {
+    "You are organizing a day's worth of short voice notes. Group the related \
+     notes under clear category headings (e.g. Tasks, Ideas, Follow-ups), \
+     tighten the wording, and keep it concise. Output Markdown only."
+        .to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +272,9 @@ impl Default for AppSettings {
             drive_sync_enabled: false,
             drive_sync_all_transcripts: false,
             drive_organize_hour: default_drive_organize_hour(),
+            drive_organize_enabled: false,
+            drive_organize_prompt: default_drive_organize_prompt(),
+            drive_last_organized_date: String::new(),
             drive_account_email: String::new(),
             pill_x: None,
             pill_y: None,

@@ -71,6 +71,9 @@ export type AppSettings = {
   driveSyncEnabled: boolean;
   driveSyncAllTranscripts: boolean;
   driveOrganizeHour: number;
+  driveOrganizeEnabled: boolean;
+  driveOrganizePrompt: string;
+  driveLastOrganizedDate: string;
   driveAccountEmail: string;
   hotkeys: HotkeySettings;
   pillX: number | null;
@@ -529,6 +532,13 @@ export function googleSignOut(): Promise<AppSettings> {
 /** Syncs notes (and optionally all transcripts) to Google Drive now. */
 export function driveSyncNow(): Promise<DriveSyncReport> {
   return invoke("drive_sync_now");
+}
+
+/** Runs the end-of-day organize pass now for a local calendar day (today when
+ * omitted). Resolves true when an organized file was written, false when the
+ * day had no notes. Needs the local LLM (notes analysis) running. */
+export function driveOrganizeNow(day?: string): Promise<boolean> {
+  return invoke("drive_organize_now", { day });
 }
 
 export function openReleasePage(url?: string): Promise<void> {

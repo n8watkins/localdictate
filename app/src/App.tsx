@@ -52,6 +52,7 @@ import {
   deleteTranscript,
   deleteModel,
   downloadModel,
+  driveOrganizeNow,
   driveSyncNow,
   googleSignIn,
   googleSignOut,
@@ -1885,6 +1886,25 @@ function GoogleDrivePanel({
     }
   }, []);
 
+  const handleOrganizeNow = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const wrote = await driveOrganizeNow();
+      setNotice(
+        wrote
+          ? "Organized today's notes into a Drive file."
+          : "No notes for today yet — nothing to organize.",
+      );
+    } catch (cause) {
+      setError(commandErrorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   return (
     <SectionPanel
       icon={<Cloud aria-hidden="true" size={16} />}
@@ -1945,6 +1965,19 @@ function GoogleDrivePanel({
             />
           </SettingRow>
           <SettingRow
+            description="At the hour below, the local LLM reorganizes the previous day's notes into a tidy Drive file."
+            label="End-of-day auto-organize (local LLM)"
+          >
+            <Toggle
+              checked={settings.driveOrganizeEnabled}
+              disabled={actions.savingSettings || busy}
+              label="End-of-day auto-organize (local LLM)"
+              onChange={(driveOrganizeEnabled) =>
+                actions.updateSettings({ driveOrganizeEnabled })
+              }
+            />
+          </SettingRow>
+          <SettingRow
             description="Hour of day (local time) for the daily organize pass."
             label="Daily organize hour (local time)"
           >
@@ -1964,6 +1997,9 @@ function GoogleDrivePanel({
               ))}
             </select>
           </SettingRow>
+          <p className="muted vocab-hint">
+            Auto-organize needs the local LLM (notes analysis) running.
+          </p>
           <div className="setting-control">
             <button
               className="secondary-button"
@@ -1972,6 +2008,14 @@ function GoogleDrivePanel({
               type="button"
             >
               {busy ? "Syncing…" : "Sync now"}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => void handleOrganizeNow()}
+              type="button"
+            >
+              {busy ? "Working…" : "Organize today now"}
             </button>
           </div>
         </>

@@ -284,6 +284,11 @@ pub fn run() {
             app.manage(whisper_server::WarmTranscriber::new());
             // Background worker that debounces note saves into Drive auto-syncs.
             app.manage(note_sync::DriveSyncWorker::spawn(app.handle().clone()));
+            // Scheduler that runs the end-of-day organize pass at the configured
+            // hour (local LLM reorganizes the previous day's notes to Drive).
+            app.manage(note_sync::DriveOrganizeScheduler::spawn(
+                app.handle().clone(),
+            ));
             hotkeys::setup(app.handle(), &settings.hotkeys)?;
             tray::setup(app.handle())?;
             // The dev flavor must be tellable from stable at a glance: the
@@ -371,7 +376,8 @@ pub fn run() {
             commands::google_status,
             commands::google_sign_in,
             commands::google_sign_out,
-            commands::drive_sync_now
+            commands::drive_sync_now,
+            commands::drive_organize_now
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

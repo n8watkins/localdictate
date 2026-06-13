@@ -555,6 +555,25 @@ pub async fn drive_sync_now(
     .map_err(|error| CommandError::new("drive_sync_failed", error.to_string()))?
 }
 
+/// Runs the end-of-day organize pass now for the given local calendar day (or
+/// today when omitted), for manual testing. Reorganizes that day's notes with
+/// the local LLM and writes `{day}-organized.md` to Drive. Returns true when a
+/// file was written, false when the day had no notes. Async because the local
+/// inference can be slow.
+#[tauri::command]
+pub async fn drive_organize_now(
+    app: tauri::AppHandle,
+    day: Option<String>,
+) -> Result<bool, CommandError> {
+    let service = app.config().identifier.clone();
+    let day = day.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::note_sync::organize_day(&app, &service, &day)
+    })
+    .await
+    .map_err(|error| CommandError::new("drive_organize_failed", error.to_string()))?
+}
+
 fn open_folder(app: &tauri::AppHandle, dir: std::path::PathBuf) -> Result<(), CommandError> {
     std::fs::create_dir_all(&dir).map_err(|error| {
         CommandError::new(

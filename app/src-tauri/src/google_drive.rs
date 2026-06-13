@@ -79,22 +79,40 @@ impl Drive {
         let mut synced_notes = 0_u32;
         for (day, mut day_notes) in by_day {
             day_notes.sort_by_key(|note| note.created_at);
-            let month = &day[..7]; // YYYY-MM
-            let month_folder = self.ensure_folder(Some(&root), month)?;
-            let file_name = format!("{day}.md");
             let content = render_daily(&day, &day_notes);
-
-            let file_id = match self.find_file(&month_folder, &file_name)? {
-                Some(id) => id,
-                None => self.create_file(&month_folder, &file_name)?,
-            };
-            self.upload_text(&file_id, &content)?;
+            self.write_into_month(&root, &day, &format!("{day}.md"), &content)?;
 
             files_written += 1;
             synced_notes += day_notes.len() as u32;
         }
 
         Ok(SyncReport { synced_notes, files_written })
+    }
+
+    /// Ensures the `YYYY-MM` month folder under `root`, find-or-creates
+    /// `file_name` inside it, and uploads `content`. Shared by the daily sync
+    /// and the end-of-day organize pass.
+    fn write_into_month(
+        &self,
+        root: &str,
+        day: &str,
+        file_name: &str,
+        content: &str,
+    ) -> Result<(), CommandError> {
+        let month = &day[..7]; // YYYY-MM
+        let month_folder = self.ensure_folder(Some(root), month)?;
+        let file_id = match self.find_file(&month_folder, file_name)? {
+            Some(id) => id,
+            None => self.create_file(&month_folder, file_name)?,
+        };
+        self.upload_text(&file_id, content)
+    }
+
+    /// Writes the end-of-day organized Markdown into the day's month folder as
+    /// `{day}-organized.md`, alongside the raw `{day}.md` daily log.
+    pub fn write_organized(&self, day: &str, content: &str) -> Result<(), CommandError> {
+        let root = self.ensure_folder(None, ROOT_FOLDER_NAME)?;
+        self.write_into_month(&root, day, &format!("{day}-organized.md"), content)
     }
 
     /// Finds the folder named `name` (optionally under `parent`), creating it if
