@@ -1,178 +1,192 @@
-# LocalDictate — Session Handoff
+# Scribe — Session Handoff
 
-Last updated: 2026-06-12 (notes-analysis verified live + Google Drive plan)
-Read this first, then **`docs/GOOGLE_INTEGRATION_PLAN.md`** (the next big epic),
-then `docs/STATUS_AND_NEXT_STEPS.md` for older project history.
+Last updated: 2026-06-12 (rebrand LocalDictate→Scribe shipped as the daily app;
+Google Drive notes sync Phases 1–3 built + verified).
+Read this first, then **`docs/GOOGLE_INTEGRATION_PLAN.md`** (the Drive epic, all
+decisions locked), then `docs/STATUS_AND_NEXT_STEPS.md` for older history.
+
+> The app was renamed **LocalDictate → Scribe** this session. Older docs
+> (`PRD.md`, `IMPLEMENTATION_PLAN.md`, this file's predecessor) still say
+> "LocalDictate"; treat **Scribe / `com.natkins.scribe`** as the live identity.
+> The GitHub repo is still `n8watkins/localdictate` (not renamed) — its URLs in
+> the code are intentional.
 
 ## Project summary
 
-LocalDictate is a Windows-only Tauri 2 app (Rust backend + React/Vite
-frontend) for local push-to-talk dictation via whisper.cpp. Hold `Ctrl+Win`
-or tap `` ` `` (acts on release), talk, and text is typed at the cursor by a
-locally running model. Holding `` ` `` and tapping `Q` dictates a **note**
-instead (blue pill, saved to the Notes view, never pasted). The owner
-(Nathan) uses it daily on Windows 11; he is the only stakeholder and is
-usually AT the machine during agent sessions.
+Scribe is a Windows-only Tauri 2 app (Rust backend + React/Vite frontend) for
+local push-to-talk dictation via whisper.cpp. Hold `Ctrl+Win` or tap `` ` ``
+(acts on release), talk, and text is typed at the cursor. Holding `` ` `` and
+tapping `Q` dictates a **note** (blue pill, saved to Notes, never pasted). New
+this session: **Google Drive notes sync** — notes push to the user's own Drive
+as dated Markdown. The owner (Nathan) uses it daily on Windows 11; he's the only
+stakeholder and is usually AT the machine during sessions.
 
 - WSL repo (source of truth): `/home/natkins/n8builds/tools/localdictate`
 - Windows clone (build/test only): `C:\Users\natha\Projects\Tools\localdictate`
-- GitHub: `https://github.com/n8watkins/localdictate` (public; releases via
-  tag-triggered CI; latest release tag `v0.2.0`)
-- Installed apps on the owner's machine:
-  - **LocalDictate** (stable, `com.natkins.localdictate`) — his daily tool;
-    currently runs commit `b78e498`. Only upgrade it when he asks: full
-    `npm run tauri build`, then silent NSIS `/S` upgrade, relaunch from
-    `C:\Users\natha\AppData\Local\LocalDictate\app.exe`.
-  - **LocalDictate Dev** (`com.natkins.localdictate.dev`) — the agent's test
-    app, own data dir/DB, runs side-by-side with stable.
+- GitHub: `https://github.com/n8watkins/localdictate` (public; repo NOT renamed)
+- **Installed app:** **Scribe** (`com.natkins.scribe`) at
+  `C:\Users\natha\AppData\Local\Scribe\app.exe`, data in
+  `%APPDATA%\com.natkins.scribe\`. Now version **0.3.0**, the owner's daily tool.
+  - **LocalDictate is uninstalled.** Its old data dir
+    `%APPDATA%\com.natkins.localdictate\` is intentionally kept as a migration
+    backup (the rename migration reads it).
+  - **Scribe Dev** (`com.natkins.scribe.dev`) — the agent's `--no-bundle` test
+    build at the clone's `target/release/app.exe`; own data dir/keychain.
 
-## This session (2026-06-12, later)
+## This session (2026-06-12)
 
-- **Notes analysis verified working end-to-end against a live local LLM.** The
-  owner installed **LM Studio 0.4.16** and downloaded **Gemma 4** models
-  (`google/gemma-4-e4b` small/gaming-friendly, `google/gemma-4-26b-a4b-qat`
-  big MoE). Server confirmed serving on `http://127.0.0.1:1234/v1`; a real
-  chat-completion round-trip succeeded. Stable app settings now have
-  `notesAnalysisEnabled=true`, endpoint `…/v1`, model `google/gemma-4-e4b`.
-  **Recommended daily model: `google/gemma-4-e4b`** (fast, low VRAM). Set LM
-  Studio **Max idle TTL → 5 min** + JIT auto-evict (so VRAM frees for gaming);
-  the **headless** "Enable Local LLM Service" toggle lets the server run without
-  the GUI. NOTE: reaching the Windows LM Studio server from WSL needs the
-  Windows side — `cmd.exe /c "curl …"` or `powershell.exe Invoke-RestMethod`;
-  WSL `localhost` does NOT reach it.
-- The owner has NOT yet clicked the in-app **Sparkles** button on a real note
-  (only the API path is proven). A note needs the `` ` ``+Q chord; the test
-  dictation "Alright, I think it did it." came in as a normal transcript
-  (`isNote:false`), which is never analyzed.
-- **Correction to the note below:** the stable install is NO LONGER on
-  `b78e498` — it wrote `notesAnalysis*` settings today, so the running stable
-  binary already includes the notes-analysis feature (built after `b78e498`).
-  Treat "stable runs b78e498" as stale.
-- **New epic planned: Google Drive notes sync** — see
-  `docs/GOOGLE_INTEGRATION_PLAN.md` (commits `992264b`, `<this docs commit>`).
-  All product decisions are locked there. **Gemini cloud analysis is PINNED**
-  (owner doesn't want it now); the end-of-day "organize" pass uses the existing
-  LOCAL LLM. Measured storage: text ~40 MB/yr (fine on free 15 GB), audio
-  ~97 GB/yr (**never sync audio**).
+Two big epics, both shipped:
+
+**1. Rebrand LocalDictate → Scribe** (`f34887b`, refined later). Display name +
+bundle identifier `com.natkins.localdictate` → `com.natkins.scribe` (dev →
+`.scribe.dev`). First-run **data migration** in `lib.rs::migrate_pre_rebrand_data`
+copies the old DB/clips/models across (hardened `3e42c48`: atomic DB copy via
+temp+rename, and a `.rebrand-migrated` completion marker so an interrupted
+migration resumes instead of stranding data). DB file is now `scribe.sqlite3`.
+**Verified live:** the owner's full history (873 transcripts, 5 notes) migrated
+intact, app boots clean, hotkeys register 4/4.
+
+**2. Google Drive notes sync — Phases 1–3** (see `GOOGLE_INTEGRATION_PLAN.md`):
+- **Phase 1** (`ef6e279` backend, `43cc891` frontend): desktop OAuth 2.0
+  (loopback + PKCE, scope `drive.file openid email`), refresh token in the OS
+  keychain (keyring), ensure "Scribe Voice Notes" folder, write daily
+  `YYYY-MM/YYYY-MM-DD.md`. **Verified END-TO-END live** — a real note synced to
+  the owner's Drive (folder/file confirmed via the Drive API).
+- **Phase 2** (`f81a6cb`): auto-sync each note to Drive on save (debounced
+  background `DriveSyncWorker`), gated by the "Sync notes to Google Drive"
+  toggle. Code verified (109 tests); **owner hasn't watched it fire live yet**.
+- **Phase 3** (`de44cec`): end-of-day `DriveOrganizeScheduler` runs the local
+  notes-analysis LLM over the previous day's notes → `YYYY-MM-DD-organized.md`.
+  Opt-in via "End-of-day auto-organize" toggle + `drive_organize_hour`. **Never
+  run live yet.**
+
+Plus: gitignored OAuth secret scaffolding (`10c6659`), Settings tabs
+(`5d69cd9`), token-based signed-in detection + email scope (`220c355`), clean
+notes-only daily log (`6bce6ad`), Notes-view "Sync to Drive" button (`ca4000c`),
+pause-ellipsis stripping in transcripts (`0de5b72`), title-bar dedup (`697ab93`).
+
+**Google Cloud:** OAuth Desktop client created (id/secret in the gitignored
+`google_secrets.rs`); Drive API enabled; consent screen the owner reported
+**published to Production** (so refresh tokens don't expire weekly — Testing
+mode expires them in 7 days). Owner is signed in on production Scribe
+(`drive_account_email = nathancwatkins23@gmail.com`, token in keychain).
 
 ## State
 
-Pushed through `b78e498`; commits after that are local-only until the owner
-asks to push. Session commits, newest first:
+All work is **local commits on `main`, NOT pushed** (origin is behind; push only
+when the owner asks). Session commits, newest first:
 
 | Commit | What |
 |---|---|
-| `0580cfa` | **Auto-updater** (NOT yet pushed/released): tauri-plugin-updater + process plugins, pubkey + endpoints in `tauri.conf.json`, `createUpdaterArtifacts`, CI signs NSIS + publishes `latest.json`/`.sig`, About gains an Install update button with progress. See the updater gotcha below. |
-| `5a453cf` | Mock-server integration tests for the notes-analysis client |
-| `04ff13d` | Notes-analysis frontend: Settings panel (toggle/endpoint/model/prompt), Sparkles per-note Analyze button + cyan result block in Notes view; `VocabularyField` generalized to `BlurSavedTextArea` |
-| `6d1c061` | Notes-analysis backend: `notesAnalysis*` settings (default OFF, endpoint defaults to LM Studio `http://127.0.0.1:1234/v1`), migration 004 (`analysis`, `analysis_model`, `analysis_created_at`), `note_analysis.rs` OpenAI-compatible client, `analyze_note` command |
-| `b78e498` | On-brand cyan scrollbars; native title bar colored to the app bg via DwmSetWindowAttribute (`lib.rs::style_native_titlebar`) |
-| `6ba2a25` | Whisper noise annotations (`[BLANK_AUDIO]`, `(silence)`, …) stripped in `whisper.rs::normalize_transcript_text`; annotation-only transcripts become empty |
-| `732cfe4` | LocalDictate Dev build flavor (`tauri.dev-flavor.conf.json`, `npm run tauri:dev-flavor`) |
-| `67a1dd9`/`eebf692`/`9df6188`/`11750e6` | The hotkey saga (see Gotchas): toggle key driven by a native GetAsyncKeyState watcher, Q grabbed from worker threads |
-| `c986c68` | Notes v1: tilde-release toggle, tilde+Q note chord, `is_note` (migration 003), Notes view, archive pages 10→25 |
-| `65d1605` | OpenWhispr model-cache fallback removed (cache deleted; owner KEEPS the OpenWhispr app) |
-| `8344e5e` | v0.2.0, runtime version in About, GitHub update check (button + launch toast via `update_check.rs`) |
-| `92367b6` | Ctrl+Alt+F dashboard toggle (`dashboardHotkeyToggles` setting); paste waits for hotkey-modifier release (fixed Ctrl+Alt+V opening Windows Terminal's settings JSON); confirm pill 8 s; visualizer full-scale at 0.07 RMS |
-| `437e057`/`85ee41a`/`287926f`/`1331c95`/`3c1fa3b` | Pill: missing window ACL perms (the pill never showed at all before), compact-start + grow-upward text mode (cap 150), serialized window ops, 350 ms segment streaming |
+| `697ab93` | Blank native title bar on stable (no duplicate "Scribe"; dev keeps "Scribe Dev") |
+| `de44cec` | **Phase 3**: end-of-day local-LLM auto-organize (scheduler + `drive_organize_now`) |
+| `f81a6cb` | **Phase 2**: auto-sync notes to Drive on save (`DriveSyncWorker`, debounced) |
+| `3e42c48` | Harden rebrand migration (atomic DB copy + `.rebrand-migrated` marker) + cleanups (pkg 0.3.0) |
+| `9093b80` | Bump version to 0.3.0 |
+| `ca4000c` | Notes view "Sync to Drive" button |
+| `6bce6ad` | Clean notes-only daily Drive log (friendly date, 12h time, no empty summaries) |
+| `0de5b72` | Strip pause ellipses (`...`/`…`) from transcripts |
+| `220c355` | Signed-in = stored token (not email); add `openid email` scope + OIDC userinfo |
+| `5d69cd9` | Settings: tabbed sections |
+| `10c6659` | Load OAuth client id/secret from gitignored `google_secrets.rs` (build.rs recreates from example) |
+| `f34887b` | **Rebrand LocalDictate → Scribe** (identifier + data migration) |
+| `43cc891` / `ef6e279` | Google Drive sync Phase 1 frontend / backend |
 
-Verified on hardware by the owner: tilde toggle on release, tilde+Q blue-pill
-note, pill growth/anchoring, Ctrl+Alt+F toggle, blank-audio fix, seamless
-title bar. ffmpeg is installed (winget Gyan.FFmpeg, user PATH) so
-Transcribe-a-file handles video; **owner hasn't personally run an MP4 yet**,
-and hasn't yet dictated a non-silent note (empty notes are never saved).
+Verified: Windows `cargo test` **109 passed** at each Rust change; frontend
+`tsc + npm run build` clean; rebrand migration + Drive Phase-1 sync confirmed on
+the owner's real machine/Drive.
 
 ## Next steps (priority order)
 
-1. **Google Drive notes sync** — the active epic. Full blueprint with all
-   owner-locked decisions in **`docs/GOOGLE_INTEGRATION_PLAN.md`**; do NOT
-   re-ask anything it answers. Start with Phase 1 (OAuth desktop loopback+PKCE,
-   scope `drive.file`, ensure "LocalDictate Voice Notes" folder, write today's
-   daily `.md` on note save). Then auto-sync, month folders, end-of-day
-   local-LLM organize pass, weekly summary. Secrets → OS keychain, text only.
-2. **Confirm Sparkles in-app** (small): owner clicks Sparkles on a real
-   `` ` ``+Q note to verify the UI path (API path already proven this session).
-3. **Ship + first updater release**: push when the owner asks, upgrade his
-   stable install (silent NSIS), tag `v0.3.0` (bump versions in
-   `tauri.conf.json` + `Cargo.toml` first) so CI publishes the first
-   `latest.json`. One-click updates only work AFTER that release.
-4. Later: **Gemini BYO-key analysis** (PINNED — see plan doc); code signing
-   (revisit when the owner wants money spent — explained 2026-06-12).
+1. **Confirm auto-sync + auto-organize LIVE** (needs the owner; agent verifies):
+   - Owner: Settings → Google Drive → turn ON **"Sync notes to Google Drive"**
+     (currently OFF on production), dictate a `` ` ``+Q note, wait ~3 s.
+   - Agent: confirm the note auto-appears in Drive (`Scribe Voice Notes/…`).
+   - For Phase 3: turn on "End-of-day auto-organize" + "notes analysis" (LM
+     Studio running), click **"Organize today now"**, confirm `…-organized.md`.
+2. **Drive cleanup** (owner, manual): delete the leftover **`2026-06-12.md`**
+   test file from `Scribe Voice Notes/2026-06/` (it has a seeded test note from
+   the dev flavor). The agent's Drive access is read-only (search/read only).
+3. **Phase 2 optimization — per-day file-id caching.** `drive_sync_now` /
+   auto-sync currently re-lists folders and rebuilds ALL daily files from the DB
+   each run (O(all history); idempotent but wasteful at scale). Cache
+   `{day → drive_file_id}` (e.g. a small table/JSON) so a sync touches only the
+   affected day. See `GOOGLE_INTEGRATION_PLAN.md` Phase 2.
+4. **Phase 4** — weekly `YYYY-Www-summary.md`; and wire the currently-dead
+   `drive_sync_all_transcripts` setting (a reserved stub) into a SEPARATE
+   `Transcripts/` Drive backup (the daily notes file is notes-only by design).
+5. **Tech debt:** de-dup the identical percent-encode helper in
+   `google_oauth.rs` + `google_drive.rs`; decide whether distributed/CI builds
+   should ship real OAuth creds (CI has no secret-injection step, so a CI build
+   reports "not configured" and Drive sync is off — fine for owner-only).
+6. Earlier backlog still open: first **GitHub release** (push + tag `v0.3.0` so
+   the updater chain starts — note a LocalDictate→Scribe jump is a fresh install,
+   not an auto-update); Gemini BYO-key analysis (PINNED, see plan); code signing.
 
-## Conventions & gotchas (hard-won — do not relearn these)
+## Conventions & gotchas (hard-won — do not relearn)
 
-- **Windows verification is mandatory** for Rust changes: nearly everything
-  is `#[cfg(windows)]`. Sync the clone:
-  `cd /mnt/c/Users/natha/Projects/Tools/localdictate && git fetch /home/natkins/n8builds/tools/localdictate main && git merge --ff-only FETCH_HEAD`
+- **Windows verification is mandatory** for Rust (most code is `#[cfg(windows)]`).
+  Sync the clone, then test:
+  `cd /mnt/c/Users/natha/Projects/Tools/localdictate && git checkout -- . && git fetch /home/natkins/n8builds/tools/localdictate main && git merge --ff-only FETCH_HEAD`
   then `cd /mnt/c && cmd.exe /c "cd /d C:\Users\natha\Projects\Tools\localdictate\app\src-tauri && cargo test 2>&1"`.
-  Frontend: `npx tsc --noEmit -p tsconfig.json && npm run build` in `app/`.
-- **Test on the Dev flavor, ship to stable only on owner request.**
-  `npm run tauri:dev-flavor` builds `target/release/app.exe` with the dev
-  identifier (the flavor is baked at build time — always rebuild the right
-  flavor before launching). Dev has its own data dir
-  (`%APPDATA%\Roaming\com.natkins.localdictate.dev`, models already copied).
-  Global hotkeys belong to whichever instance registered first.
-- **The owner is AT the machine**: no input injection, no audio playback,
-  no focus stealing. Verify via the log
-  (`%LOCALAPPDATA%\com.natkins.localdictate\logs\LocalDictate.log`) and
-  direct SQLite settings edits (backend re-reads per recording; the pill
-  re-reads per state change). Wait for dictation-idle in the log before
-  killing/upgrading the app. **Synthetic keypresses are invisible** to both
-  the hotkey plugin and GetAsyncKeyState while a hotkey is registered —
-  hotkey verification needs the owner's physical keys (he responds fast).
-- **Hotkey plumbing landmines** (cost hours): tauri-plugin-global-shortcut
-  `register`/`unregister` deadlock when called on the main thread (inside a
-  handler OR via run_on_main_thread) but work from worker threads; an
-  unmodified `Backquote` shortcut has id 0 and its events were unreliable;
-  RegisterHotKey keeps suppressing the keystroke even when events are
-  dropped. Hence: the toggle key is owned by `hotkeys.rs::run_toggle_watcher`
-  (GetAsyncKeyState polling, both edges), plugin events for ToggleDictation
-  are ignored when the watcher is active, and the Q grab is armed/disarmed
-  from `std::thread::spawn`.
-- Webview/window bugs (ACL permissions, window management) only surface in
-  real runs — the pill capability bug survived 88 green tests. Pill window
-  perms live in `app/src-tauri/capabilities/pill.json`.
-- Settings: new fields need `#[serde(default = ...)]` only; changed shipped
-  defaults go through `CURRENT_DEFAULTS_VERSION` + `migrate_defaults`. DB
-  schema: numbered SQL in `app/src-tauri/migrations/` (003 = `is_note`),
-  applied in `db.rs::apply_migrations` ("duplicate column" = already ran).
-- reqwest has `default-features = false`: no `.json()`, use `.text()` +
-  serde_json (see `update_check.rs` and `note_analysis.rs`).
-- **Updater signing**: `createUpdaterArtifacts` makes every bundling
-  `npm run tauri build` REQUIRE the signing key AND its password. CI uses
-  the `TAURI_SIGNING_PRIVATE_KEY` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  repo secrets (rotated 2026-06-12; the key is password-protected because
-  Windows cannot represent an empty env var, so a passwordless key hangs
-  local builds at an interactive prompt). Key + password files live at
-  `~/.tauri/localdictate-updater.key{,.password}` in WSL and
-  `C:\Users\natha\.tauri\` on Windows. Local signed builds from WSL:
+  (The clone shows CRLF drift on `Cargo.toml`/`Cargo.lock` — `git checkout -- .`
+  first.) Frontend (builds on Linux): `npx tsc --noEmit -p tsconfig.json && npm run build` in `app/`.
+- **The gitignored OAuth secret won't sync via git.** `app/src-tauri/src/google_secrets.rs`
+  (CLIENT_ID/CLIENT_SECRET) is gitignored; `build.rs` recreates a *placeholder*
+  copy from `google_secrets.example.rs` on a fresh clone (Drive sync then reports
+  "not configured"). To build a working Scribe in the clone you MUST
+  `cp` the real `google_secrets.rs` from the WSL repo into the clone after each
+  `git` sync. The real file lives only in the WSL working tree.
+- **Bundle builds (`npx tauri build`) fail with `os error 32` (file in use) if a
+  clone-path `app.exe` OR its child `whisper-server.exe` is running.** Before any
+  bundle build, kill clone-path procs:
+  `powershell.exe -NoProfile -Command "Get-Process app,whisper-server,whisper-cli -EA SilentlyContinue | ? { $_.Path -like '*Projects*' } | Stop-Process -Force"`.
+  Force-killing a Scribe instance orphans its `whisper-server` child — kill that too.
+- **Signed bundle build** (needs the updater key + password; `createUpdaterArtifacts`
+  makes every bundling build require them):
   `export TAURI_SIGNING_PRIVATE_KEY='C:\Users\natha\.tauri\localdictate-updater.key' TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat ~/.tauri/localdictate-updater.password)" WSLENV=TAURI_SIGNING_PRIVATE_KEY/w:TAURI_SIGNING_PRIVATE_KEY_PASSWORD/w`
-  then run `cmd.exe /c "cd /d C:\...\app && npx tauri build"`. There is NO
-  `_PATH` env variant in Tauri v2 (the one variable takes a path or the key
-  content). Losing the key breaks updates for all shipped builds.
-  Dev-flavor builds are `--no-bundle`, so they never need the key.
-- **A running Dev-flavor instance shadow-captures the owner's keys**: its
-  GetAsyncKeyState toggle watcher sees physical tilde presses meant for
-  stable, silently records his mic, and races stable for the Q grab. Launch
-  the dev app only for a specific check and kill it right after. Its log is
-  `%LOCALAPPDATA%\com.natkins.localdictate.dev\logs\LocalDictate Dev.log`
-  (space in the filename).
-- Notes semantics: `is_note` transcripts save to history only (never the
-  Last Transcript Buffer, never auto-pasted, saved even with history off).
-- Commit per logical change with `Co-Authored-By: Claude ...`; push only
-  when the owner asks (he has been saying push — everything is pushed).
-- Owner dictates stream-of-consciousness; transcription garbles words. Pick
-  the sensible reading, say so, ask at most one targeted question.
+  then `cmd.exe /c "cd /d C:\...\app && npx tauri build"`. Key filename stays
+  `localdictate-updater.key` (validated by embedded pubkey, not name). Dev-flavor
+  builds are `--no-bundle` and need no key.
+- **Install / upgrade Scribe** (silent, currentUser NSIS): close Scribe + its
+  whisper-server, then `Start-Process <Scribe_0.3.0_x64-setup.exe> -ArgumentList '/S' -Wait`,
+  relaunch `%LOCALAPPDATA%\Scribe\app.exe`, verify the log
+  (`%LOCALAPPDATA%\com.natkins.scribe\logs\Scribe.log`): "Settings loaded",
+  "Registered 4 of 4 hotkey bindings", "Scribe setup complete". Same identifier =
+  in-place upgrade, data preserved.
+- **Owner is AT the machine**: no input injection, no focus stealing, no audio.
+  Verify via the log + direct SQLite reads (backend re-reads settings per
+  recording). **Synthetic keypresses are invisible** to the hotkey watcher, so
+  hotkey/dictation behavior can ONLY be verified by the owner's physical keys.
+  Auto-sync/auto-organize end-to-end therefore need the owner to dictate.
+- **Two Scribe instances fight over hotkeys.** A running Scribe Dev shadow-
+  captures the owner's `` ` `` (its GetAsyncKeyState watcher) and the one that
+  registered `Backquote` first owns suppression (so the `` ` `` doesn't type).
+  Launch Dev only for a check and kill it right after. Daily single-instance use
+  suppresses the tilde correctly — that's expected.
+- **Drive/OAuth:** scope is `drive.file openid email`; refresh token in the OS
+  keychain keyed by `app.config().identifier` (dev/stable isolated). The
+  `drive.file` scope alone does NOT return the email — that's why the email scope
+  + OIDC userinfo were added, and why "signed in" is based on the stored token,
+  not the email. `reqwest` is `default-features=false` (no `.json()` — use
+  `.text()` + serde_json). New settings need `#[serde(default)]` only.
+- **The Drive `q` injection note:** folder/file names are escaped
+  (`escape_query_literal`) + percent-encoded; security review found no
+  Critical/High/Medium issues in the OAuth/Drive/secret code.
+- Commit per logical change with `Co-Authored-By: Claude ...`; push only when the
+  owner asks. Owner dictates stream-of-consciousness; pick the sensible reading.
 
 ## File map (for the next steps)
 
-- `app/src-tauri/src/settings.rs` — AppSettings (incl. `notesAnalysis*`)
-- `app/src-tauri/src/db.rs` — transcripts, `search_transcripts(notes_only)`, `save_note_analysis`
-- `app/src-tauri/src/transcript.rs` — Transcript (`is_note`, `analysis*`)
-- `app/src-tauri/src/note_analysis.rs` — OpenAI-compatible client + mock-server tests
-- `app/src-tauri/src/update_check.rs` — GitHub version check (detection only)
-- `app/src-tauri/src/lib.rs` — plugin/command registration, titlebar styling
-- `app/src-tauri/src/hotkeys.rs` — toggle watcher + note chord (don't touch lightly)
-- `app/src/App.tsx` — Notes view (HistoryView notesOnly), AboutView updates row + install flow, Settings panels
+- `app/src-tauri/src/google_oauth.rs` — PKCE loopback flow, token refresh, keychain
+- `app/src-tauri/src/google_drive.rs` — Drive REST: folders/files, `sync_notes`, `write_organized`, `render_daily`, mock-server tests
+- `app/src-tauri/src/google_secrets.rs` — gitignored real OAuth id/secret (`.example.rs` is the committed template; `build.rs` recreates)
+- `app/src-tauri/src/note_sync.rs` — `collect_and_sync`, `DriveSyncWorker` (auto-sync), `organize_day`, `DriveOrganizeScheduler`
+- `app/src-tauri/src/note_analysis.rs` — local-LLM client reused by the organize pass
+- `app/src-tauri/src/commands.rs` — `google_status/sign_in/sign_out`, `drive_sync_now`, `drive_organize_now`
+- `app/src-tauri/src/lib.rs` — `migrate_pre_rebrand_data`, worker/scheduler spawn, command registration, title styling
+- `app/src-tauri/src/settings.rs` — AppSettings incl. all `drive*` fields
+- `app/src-tauri/src/dictation.rs` — note-save path; the auto-sync `worker.notify()` hook (~line 215)
+- `app/src/App.tsx` — `GoogleDrivePanel` (Drive settings), Notes view + "Sync to Drive" button, Settings tabs
 - `app/src/backend.ts` — TS command wrappers/types
-- `.github/workflows/release.yml` — tag-triggered Release workflow (signs NSIS, publishes `latest.json`)
+- `docs/GOOGLE_INTEGRATION_PLAN.md` — the locked Drive plan (Phases, decisions)
