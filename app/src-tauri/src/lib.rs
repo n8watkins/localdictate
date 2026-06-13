@@ -13,6 +13,7 @@ pub mod incremental;
 pub mod model_manager;
 pub mod models;
 pub mod note_analysis;
+pub mod note_sync;
 pub mod output;
 pub mod settings;
 pub mod stats;
@@ -281,6 +282,8 @@ pub fn run() {
             }
             app.manage(BackendState::new(db, audio_temp_dir));
             app.manage(whisper_server::WarmTranscriber::new());
+            // Background worker that debounces note saves into Drive auto-syncs.
+            app.manage(note_sync::DriveSyncWorker::spawn(app.handle().clone()));
             hotkeys::setup(app.handle(), &settings.hotkeys)?;
             tray::setup(app.handle())?;
             // The dev flavor must be tellable from stable at a glance: the

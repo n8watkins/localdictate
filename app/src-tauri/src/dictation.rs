@@ -212,6 +212,16 @@ fn transcribe_recording_inner(
         }
         return Err(error);
     }
+
+    // A saved note flows to Google Drive automatically when Drive sync is on.
+    // The worker debounces and uploads off this thread, so it never delays the
+    // dictation result.
+    if transcript.is_note && settings.drive_sync_enabled {
+        if let Some(worker) = app.try_state::<crate::note_sync::DriveSyncWorker>() {
+            worker.notify();
+        }
+    }
+
     transition_after_success(app);
 
     let result = DictationResult {

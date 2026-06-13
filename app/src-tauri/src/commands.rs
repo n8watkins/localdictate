@@ -549,33 +549,7 @@ pub async fn drive_sync_now(
 ) -> Result<crate::google_drive::SyncReport, CommandError> {
     let service = app.config().identifier.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<BackendState>();
-        let (settings, notes) = {
-            let db = state.db()?;
-            let settings = db.get_settings()?;
-            // The daily Drive file is a clean notes-only log.
-            let result = db.search_transcripts(None, true, 100_000, 0)?;
-            (settings, result.transcripts)
-        };
-
-        if settings.drive_account_email.is_empty()
-            && !crate::google_oauth::has_stored_token(&service)
-        {
-            return Err(CommandError::new(
-                "google_not_signed_in",
-                "Sign in to Google in Settings → Integrations first.",
-            ));
-        }
-        if notes.is_empty() {
-            return Ok(crate::google_drive::SyncReport {
-                synced_notes: 0,
-                files_written: 0,
-            });
-        }
-
-        let token = crate::google_oauth::access_token(&service)?;
-        let drive = crate::google_drive::Drive::new(token)?;
-        drive.sync_notes(&notes)
+        crate::note_sync::collect_and_sync(&app, &service)
     })
     .await
     .map_err(|error| CommandError::new("drive_sync_failed", error.to_string()))?
