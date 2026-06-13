@@ -1914,19 +1914,6 @@ function GoogleDrivePanel({
             />
           </SettingRow>
           <SettingRow
-            description="Include every transcript, not only the ones marked as notes."
-            label="Back up all transcripts (not just notes)"
-          >
-            <Toggle
-              checked={settings.driveSyncAllTranscripts}
-              disabled={actions.savingSettings || busy}
-              label="Back up all transcripts (not just notes)"
-              onChange={(driveSyncAllTranscripts) =>
-                actions.updateSettings({ driveSyncAllTranscripts })
-              }
-            />
-          </SettingRow>
-          <SettingRow
             description="Hour of day (local time) for the daily organize pass."
             label="Daily organize hour (local time)"
           >

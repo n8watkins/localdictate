@@ -551,8 +551,8 @@ pub async fn drive_sync_now(
         let (settings, notes) = {
             let db = state.db()?;
             let settings = db.get_settings()?;
-            let notes_only = !settings.drive_sync_all_transcripts;
-            let result = db.search_transcripts(None, notes_only, 100_000, 0)?;
+            // The daily Drive file is a clean notes-only log.
+            let result = db.search_transcripts(None, true, 100_000, 0)?;
             (settings, result.transcripts)
         };
 

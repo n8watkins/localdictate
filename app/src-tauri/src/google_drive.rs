@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use chrono::Local;
+use chrono::{Datelike, Local, Timelike};
 use serde::Serialize;
 use serde_json::json;
 
@@ -242,24 +242,44 @@ fn read_json(
 
 /// Renders one day's notes into the daily Markdown file.
 fn render_daily(day: &str, notes: &[&Transcript]) -> String {
-    let mut out = format!("# Voice Notes — {day}\n\n");
-    for (index, note) in notes.iter().enumerate() {
-        if index > 0 {
-            out.push_str("---\n\n");
-        }
-        let time = note.created_at.with_timezone(&Local).format("%H:%M");
-        out.push_str(&format!("## {time}\n\n"));
+    // Friendly heading, e.g. "# June 12, 2026" (falls back to the raw day).
+    let heading = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .map(|date| format!("{} {}, {}", date.format("%B"), date.day(), date.year()))
+        .unwrap_or_else(|_| day.to_string());
+    let mut out = format!("# {heading}\n\n");
+    for note in notes {
+        out.push_str(&format!("**{}**\n\n", format_time(note.created_at)));
         out.push_str(note.text.trim());
-        out.push_str("\n\n");
-        let summary = note
+        out.push('\n');
+        // Show a summary only when the note has actually been analyzed — no
+        // empty "Summary: —" clutter. Rendered as a blockquote so it reads as
+        // a set-apart note, handling multi-line LLM output cleanly.
+        if let Some(summary) = note
             .analysis
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("—");
-        out.push_str(&format!("**Summary:** {summary}\n\n"));
+        {
+            out.push('\n');
+            for line in summary.lines() {
+                out.push_str(&format!("> {line}\n"));
+            }
+        }
+        out.push('\n');
     }
     out
+}
+
+/// 12-hour local time like "3:51 PM" (no leading zero on the hour).
+fn format_time(at: chrono::DateTime<chrono::Utc>) -> String {
+    let local = at.with_timezone(&Local);
+    let (hour12, meridiem) = match local.hour() {
+        0 => (12, "AM"),
+        hour @ 1..=11 => (hour, "AM"),
+        12 => (12, "PM"),
+        hour => (hour - 12, "PM"),
+    };
+    format!("{}:{:02} {}", hour12, local.minute(), meridiem)
 }
 
 /// Escapes a value embedded in a Drive `q` string literal (single quotes and
@@ -384,10 +404,10 @@ mod tests {
         // The first call is a folder query for the root app folder.
         assert!(requests[0].starts_with("GET /files?q="));
         assert!(requests[0].contains(encode("Scribe Voice Notes").as_str()));
-        // The upload PATCH carried the rendered note text + summary.
+        // The upload PATCH carried the rendered note text + summary blockquote.
         assert!(requests[6].starts_with("PATCH /files/daily1?uploadType=media"));
         assert!(requests[6].contains("buy milk and call Sam"));
-        assert!(requests[6].contains("**Summary:** Summary: errands"));
+        assert!(requests[6].contains("> Summary: errands"));
     }
 
     #[test]
@@ -410,7 +430,9 @@ mod tests {
 
         let requests = handle.join().unwrap();
         assert_eq!(requests.len(), 4);
-        assert!(requests[3].contains("**Summary:** —"));
+        // An un-analyzed note has no summary blockquote at all (no clutter).
+        assert!(requests[3].contains("no summary here"));
+        assert!(!requests[3].contains("> "));
     }
 
     #[test]
@@ -422,10 +444,11 @@ mod tests {
         let a = note("a", "first", None, early);
         let b = note("b", "second", None, late);
         let rendered = render_daily("2026-06-12", &[&a, &b]);
-        assert!(rendered.starts_with("# Voice Notes — 2026-06-12"));
+        assert!(rendered.starts_with("# June 12, 2026"));
         let first = rendered.find("first").unwrap();
-        let sep = rendered.find("---").unwrap();
         let second = rendered.find("second").unwrap();
-        assert!(first < sep && sep < second, "entries separated by a rule, in order");
+        assert!(first < second, "entries in chronological order");
+        // No empty summaries for un-analyzed notes.
+        assert!(!rendered.contains("> "));
     }
 }
