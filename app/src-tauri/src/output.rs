@@ -381,7 +381,7 @@ fn emit_output_started(
     paste_method: Option<&PasteMethod>,
 ) {
     let _ = app.emit(
-        "localdictate:output-started",
+        "scribe:output-started",
         OutputStartedPayload {
             transcript_id: transcript.id.clone(),
             action,
@@ -399,7 +399,7 @@ fn emit_output_completed(app: &AppHandle, result: &OutputResult) {
         result.transcript_id,
         result.message
     );
-    let _ = app.emit("localdictate:output-completed", result);
+    let _ = app.emit("scribe:output-completed", result);
 }
 
 pub fn emit_output_failed(app: &AppHandle, transcript_id: String, error: &CommandError) {
@@ -410,7 +410,7 @@ pub fn emit_output_failed(app: &AppHandle, transcript_id: String, error: &Comman
         error.message
     );
     let _ = app.emit(
-        "localdictate:output-failed",
+        "scribe:output-failed",
         OutputFailedPayload {
             transcript_id,
             code: error.code.clone(),
@@ -420,7 +420,7 @@ pub fn emit_output_failed(app: &AppHandle, transcript_id: String, error: &Comman
 }
 
 fn emit_state_snapshot(app: &AppHandle, snapshot: &AppStateSnapshot) {
-    let _ = app.emit("localdictate:app-state", snapshot);
+    let _ = app.emit("scribe:app-state", snapshot);
 }
 
 fn no_last_transcript() -> CommandError {

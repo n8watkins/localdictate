@@ -1,4 +1,4 @@
-# LocalDictate - Product Requirements Document
+# Scribe - Product Requirements Document
 
 Status: Reference PRD  
 Date recorded: 2026-06-10  
@@ -7,7 +7,7 @@ Stack target: Tauri v2, React, TypeScript, Rust, SQLite, whisper.cpp
 
 ## 1. Product Summary
 
-LocalDictate is a private, local-first Windows speech-to-text desktop app built with Tauri. The app lets users press a global hotkey, speak, transcribe locally using Whisper, and either paste the transcript immediately, copy it to the clipboard, or save it into an internal "Last Transcript Buffer" that can be inserted later with a separate hotkey.
+Scribe is a private, local-first Windows speech-to-text desktop app built with Tauri. The app lets users press a global hotkey, speak, transcribe locally using Whisper, and either paste the transcript immediately, copy it to the clipboard, or save it into an internal "Last Transcript Buffer" that can be inserted later with a separate hotkey.
 
 Core product promise:
 
@@ -405,7 +405,7 @@ small.en quantized
 Model storage path:
 
 ```text
-%APPDATA%/LocalDictate/models/
+%APPDATA%/Scribe/models/
 ```
 
 ### 9.7 Last Transcript Buffer UI
@@ -1031,7 +1031,7 @@ Do not include in V1:
 
 ## 22. Final Product Feel
 
-LocalDictate should feel like:
+Scribe should feel like:
 
 - A serious Windows productivity utility.
 - A private local AI tool.

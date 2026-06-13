@@ -690,7 +690,7 @@ fn stop_recording_with_reason(
 }
 
 fn emit_state_snapshot(app: &AppHandle, snapshot: &AppStateSnapshot) {
-    let _ = app.emit("localdictate:app-state", snapshot);
+    let _ = app.emit("scribe:app-state", snapshot);
 }
 
 #[cfg(windows)]

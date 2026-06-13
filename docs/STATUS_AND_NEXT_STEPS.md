@@ -1,4 +1,4 @@
-# LocalDictate - Status and Next Steps
+# Scribe - Status and Next Steps
 
 > **Current handoff: see [`docs/HANDOFF.md`](HANDOFF.md)** — it carries the
 > 2026-06-11 evening session (timeout-freeze fix, defaults v4, saved audio
@@ -8,12 +8,12 @@
 
 Status: V1 shipped — working Windows installer, hotkey dictation verified on real hardware by the owner  
 Last updated: 2026-06-11 (see HANDOFF.md for the latest session)  
-Repository: `https://github.com/n8watkins/localdictate` (private; ready to flip public)  
-Release: [v0.1.0](https://github.com/n8watkins/localdictate/releases/tag/v0.1.0) with the NSIS installer attached
+Repository: `https://github.com/n8watkins/scribe` (private; ready to flip public)  
+Release: [v0.1.0](https://github.com/n8watkins/scribe/releases/tag/v0.1.0) with the NSIS installer attached
 
 ## Where things stand
 
-LocalDictate is a working product: hold `Ctrl+Shift` (or tap `~`), talk, and text is typed at your cursor by a locally running whisper.cpp model. The owner uses it daily on Windows 11. 54 backend tests pass on both Linux and Windows; the frontend builds clean.
+Scribe is a working product: hold `Ctrl+Shift` (or tap `~`), talk, and text is typed at your cursor by a locally running whisper.cpp model. The owner uses it daily on Windows 11. 54 backend tests pass on both Linux and Windows; the frontend builds clean.
 
 ## What was done (2026-06-10 → 06-11)
 

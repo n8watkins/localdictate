@@ -9,7 +9,7 @@
 //!   segments and hands their WAV paths to the coordinator in order.
 //! - A coordinator thread receives segment paths, transcribes each one,
 //!   accumulates the texts in order, and emits
-//!   `localdictate:partial-transcript` events as it goes.
+//!   `scribe:partial-transcript` events as it goes.
 //! - The dictation stop path looks the session up in the [`Registry`] and
 //!   waits (bounded) for the assembled text. Any failure anywhere degrades
 //!   gracefully to the existing full-clip transcription path.
@@ -51,7 +51,7 @@ const PROMPT_CONTEXT_CHARS: usize = 200;
 /// text before falling back to full-clip transcription.
 pub const RESULT_TIMEOUT: Duration = Duration::from_secs(15);
 
-const PARTIAL_TRANSCRIPT_EVENT: &str = "localdictate:partial-transcript";
+const PARTIAL_TRANSCRIPT_EVENT: &str = "scribe:partial-transcript";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +62,7 @@ struct PartialTranscriptEvent {
     finalized: bool,
 }
 
-/// Emits a `localdictate:partial-transcript` event. The dictation stop path
+/// Emits a `scribe:partial-transcript` event. The dictation stop path
 /// uses this for the final `finalized: true` event; the coordinator emits the
 /// in-progress ones.
 pub fn emit_partial_transcript(
@@ -656,13 +656,13 @@ mod tests {
     fn prompt_combines_vocabulary_and_context_tail() {
         assert_eq!(prompt_with_context("", ""), "");
         assert_eq!(
-            prompt_with_context(" LocalDictate, Tauri ", ""),
-            "LocalDictate, Tauri"
+            prompt_with_context(" Scribe, Tauri ", ""),
+            "Scribe, Tauri"
         );
         assert_eq!(prompt_with_context("", "previous text"), "previous text");
         assert_eq!(
-            prompt_with_context("LocalDictate", "previous text"),
-            "LocalDictate previous text"
+            prompt_with_context("Scribe", "previous text"),
+            "Scribe previous text"
         );
     }
 

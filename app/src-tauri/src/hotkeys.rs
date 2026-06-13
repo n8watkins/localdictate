@@ -99,7 +99,7 @@ pub struct HotkeyBindingStatus {
 }
 
 /// One hotkey binding that could not be registered. Serialized into the
-/// "localdictate:hotkey-registration-failed" event payload, so `action`
+/// "scribe:hotkey-registration-failed" event payload, so `action`
 /// serializes as the camelCase action name (e.g. "holdToTalk").
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +131,7 @@ pub fn emit_registration_failures(app: &AppHandle, failures: &[HotkeyRegistratio
     }
 
     let _ = app.emit(
-        "localdictate:hotkey-registration-failed",
+        "scribe:hotkey-registration-failed",
         RegistrationFailedEvent { failures },
     );
 }
@@ -413,7 +413,7 @@ fn configure_toggle_watcher(app: &AppHandle, vk: Option<i32>) {
         let thread_stop = Arc::clone(&stop);
         let app_handle = app.clone();
         let spawned = std::thread::Builder::new()
-            .name("localdictate-toggle-watcher".to_string())
+            .name("scribe-toggle-watcher".to_string())
             .spawn(move || run_toggle_watcher(app_handle, vk, thread_stop));
         match spawned {
             Ok(thread) => {
@@ -462,7 +462,7 @@ fn on_toggle_key_down(app: &AppHandle) {
         return;
     };
     let _ = app.emit(
-        "localdictate:hotkey-action",
+        "scribe:hotkey-action",
         HotkeyAction::ToggleDictation.event_name(),
     );
     runtime.toggle_held.store(true, Ordering::SeqCst);
@@ -708,7 +708,7 @@ fn configure_chord_watcher(app: &AppHandle, bindings: Vec<(ModifierChord, Hotkey
         let thread_stop = Arc::clone(&stop);
         let app_handle = app.clone();
         let spawned = std::thread::Builder::new()
-            .name("localdictate-chord-watcher".to_string())
+            .name("scribe-chord-watcher".to_string())
             .spawn(move || windows_chord::run_watcher(app_handle, bindings, thread_stop));
 
         match spawned {
@@ -787,7 +787,7 @@ pub fn status(app: &AppHandle, hotkeys: &HotkeySettings) -> Result<HotkeyStatus,
 }
 
 fn handle_pressed(app: &AppHandle, action: HotkeyAction) {
-    let _ = app.emit("localdictate:hotkey-action", action.event_name());
+    let _ = app.emit("scribe:hotkey-action", action.event_name());
 
     // Hold-to-talk and toggle both always work, regardless of the (legacy)
     // recordingMode setting; gating either one made the other hotkey a
@@ -891,7 +891,7 @@ fn disarm_note_chord(app: &AppHandle) -> bool {
 #[cfg(windows)]
 fn handle_note_chord(app: &AppHandle) {
     log::info!("Note chord (Q) pressed during toggle hold");
-    let _ = app.emit("localdictate:hotkey-action", "note_dictation");
+    let _ = app.emit("scribe:hotkey-action", "note_dictation");
     let result = (|| {
         let state = app.state::<BackendState>();
         let status = state.app_state()?.status().clone();

@@ -456,7 +456,7 @@ pub async fn check_for_update() -> Result<crate::update_check::UpdateCheckResult
 #[tauri::command]
 pub fn open_release_page(app: tauri::AppHandle, url: Option<String>) -> Result<(), CommandError> {
     let url = url.unwrap_or_else(|| crate::update_check::RELEASES_PAGE_URL.to_string());
-    if !url.starts_with("https://github.com/n8watkins/localdictate/") {
+    if !url.starts_with("https://github.com/n8watkins/scribe/") {
         return Err(CommandError::new(
             "invalid_url",
             "Refusing to open a non-release URL.",
@@ -593,7 +593,7 @@ fn open_folder(app: &tauri::AppHandle, dir: std::path::PathBuf) -> Result<(), Co
 }
 
 /// Returns None (null) when the recording was valid but contained no speech;
-/// the frontend hears about it via "localdictate:dictation-empty" and the
+/// the frontend hears about it via "scribe:dictation-empty" and the
 /// app-state event returning to Idle.
 #[tauri::command]
 pub fn transcribe_recording(

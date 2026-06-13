@@ -247,7 +247,7 @@ function PillApp() {
 
     const setup = async () => {
       const stop = await listen<AppStateSnapshot>(
-        "localdictate:app-state",
+        "scribe:app-state",
         (event) => {
           setAppState(event.payload);
           void getSettings()
@@ -285,14 +285,14 @@ function PillApp() {
     const setup = async () => {
       unlisteners = await Promise.all([
         listen<PartialTranscriptEvent>(
-          "localdictate:partial-transcript",
+          "scribe:partial-transcript",
           (event) => {
             // The payload carries the full accumulated text for its session,
             // so replacing wholesale also handles sessionId changes.
             setPartial(event.payload);
           },
         ),
-        listen<DictationResult>("localdictate:dictation-transcribed", (event) => {
+        listen<DictationResult>("scribe:dictation-transcribed", (event) => {
           setConfirmation({
             id: event.payload.transcript.id,
             text: event.payload.transcript.text,

@@ -1,4 +1,4 @@
-# LocalDictate - Frontend UX Refinement Plan
+# Scribe - Frontend UX Refinement Plan
 
 Status: Ready for implementation  
 Created: 2026-06-10  

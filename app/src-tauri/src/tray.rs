@@ -226,7 +226,7 @@ pub fn open_dashboard(app: &AppHandle, route: Option<&str>) -> Result<(), Comman
 
     let route = route.unwrap_or("dashboard");
     let _ = app.emit(
-        "localdictate:navigate",
+        "scribe:navigate",
         NavigationPayload {
             route: route.to_string(),
         },

@@ -387,13 +387,13 @@ mod tests {
             Path::new("input.wav"),
             "en",
             Path::new("out"),
-            "  LocalDictate, Tauri, WASAPI; \"quoted\" & spaced terms  ",
+            "  Scribe, Tauri, WASAPI; \"quoted\" & spaced terms  ",
         );
 
         let prompt_index = args.iter().position(|arg| arg == "--prompt").unwrap();
         assert_eq!(
             args[prompt_index + 1],
-            "LocalDictate, Tauri, WASAPI; \"quoted\" & spaced terms"
+            "Scribe, Tauri, WASAPI; \"quoted\" & spaced terms"
         );
         assert_eq!(args.len(), prompt_index + 2);
     }

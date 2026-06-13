@@ -343,7 +343,7 @@ function App() {
 
     const setup = async () => {
       unlisteners = await Promise.all([
-        listen<AppStateSnapshot>("localdictate:app-state", (event) => {
+        listen<AppStateSnapshot>("scribe:app-state", (event) => {
           setDashboardData((current) =>
             current ? { ...current, appState: event.payload } : current,
           );
@@ -360,7 +360,7 @@ function App() {
           showNotice(`Recording with ${event.payload.microphoneName}.`);
         }),
         listen<PartialTranscriptEvent>(
-          "localdictate:partial-transcript",
+          "scribe:partial-transcript",
           (event) => {
             // The finalized event hands off to the dictation-transcribed
             // flow, which refreshes the Last Transcript Buffer.
@@ -384,7 +384,7 @@ function App() {
           showNotice(event.payload.message, "error");
           scheduleRefresh();
         }),
-        listen<DictationResult>("localdictate:dictation-transcribed", () => {
+        listen<DictationResult>("scribe:dictation-transcribed", () => {
           showNotice("Transcript ready.", "success");
           scheduleRefresh();
         }),
@@ -397,26 +397,26 @@ function App() {
           }
           scheduleRefresh();
         }),
-        listen<OutputResult>("localdictate:output-completed", (event) => {
+        listen<OutputResult>("scribe:output-completed", (event) => {
           showNotice(event.payload.message, "success");
           scheduleRefresh();
         }),
-        listen<{ message: string }>("localdictate:dictation-empty", (event) => {
+        listen<{ message: string }>("scribe:dictation-empty", (event) => {
           showNotice(event.payload.message, "info");
           scheduleRefresh();
         }),
-        listen<{ message: string }>("localdictate:output-failed", (event) => {
+        listen<{ message: string }>("scribe:output-failed", (event) => {
           showNotice(event.payload.message, "error");
           scheduleRefresh();
         }),
-        listen<{ route: string }>("localdictate:navigate", (event) => {
+        listen<{ route: string }>("scribe:navigate", (event) => {
           const route = routeToView(event.payload.route);
           if (route) {
             setActiveView(route);
           }
         }),
         listen<HotkeyRegistrationFailedEvent>(
-          "localdictate:hotkey-registration-failed",
+          "scribe:hotkey-registration-failed",
           (event) => {
             const details = event.payload.failures
               .map(

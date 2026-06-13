@@ -48,7 +48,7 @@ pub struct DictationResult {
 
 /// Transcribes a finished recording. Returns Ok(None) when the recording was
 /// valid but Whisper heard nothing (a benign outcome: the app returns to
-/// Idle and "localdictate:dictation-empty" is emitted, no transcript is
+/// Idle and "scribe:dictation-empty" is emitted, no transcript is
 /// saved). On any error, the state machine is never left stranded in
 /// Transcribing: it fails over to Error, which self-heals to Idle.
 pub fn transcribe_recording_for_app(
@@ -233,7 +233,7 @@ fn transcribe_recording_inner(
         transcription_latency_ms: whisper_result.latency_ms,
     };
 
-    let _ = app.emit("localdictate:dictation-transcribed", &result);
+    let _ = app.emit("scribe:dictation-transcribed", &result);
     // Notes are for the archive, not the cursor: never auto-paste them.
     if !transcript.is_note {
         if let Err(error) = output::handle_transcription_output(app, &transcript, &settings) {
@@ -375,7 +375,7 @@ struct DictationEmptyPayload {
 /// so it can show a gentle info toast instead of an error.
 pub(crate) fn emit_dictation_empty(app: &AppHandle) {
     let _ = app.emit(
-        "localdictate:dictation-empty",
+        "scribe:dictation-empty",
         DictationEmptyPayload {
             message: EMPTY_DICTATION_MESSAGE.to_string(),
         },
@@ -383,7 +383,7 @@ pub(crate) fn emit_dictation_empty(app: &AppHandle) {
 }
 
 /// Self-heals the Error state: after ERROR_RECOVERY_DELAY the app returns to
-/// Idle via the normal ResetError transition and "localdictate:app-state"
+/// Idle via the normal ResetError transition and "scribe:app-state"
 /// event. `entered_at` is the timestamp of the Error snapshot being healed;
 /// when any newer state (even a newer Error) has replaced it, the timer
 /// expires without doing anything, so it can never clobber later activity.
@@ -421,7 +421,7 @@ fn schedule_error_recovery(app: &AppHandle, entered_at: DateTime<Utc>) {
 }
 
 fn emit_state_snapshot(app: &AppHandle, snapshot: &AppStateSnapshot) {
-    let _ = app.emit("localdictate:app-state", snapshot);
+    let _ = app.emit("scribe:app-state", snapshot);
 }
 
 /// Permanent home of saved dictation clips: app_data_dir/clips/{id}.wav.

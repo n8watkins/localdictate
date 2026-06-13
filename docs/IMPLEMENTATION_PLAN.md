@@ -1,4 +1,4 @@
-# LocalDictate - Implementation Plan
+# Scribe - Implementation Plan
 
 Status: Initial engineering outline  
 Source PRD: [PRD.md](./PRD.md)  
@@ -16,7 +16,7 @@ Date: 2026-06-10
 ## 2. Suggested Repository Shape
 
 ```text
-localdictate/
+scribe/
   docs/
     PRD.md
     IMPLEMENTATION_PLAN.md
@@ -53,7 +53,7 @@ localdictate/
         settings/
 ```
 
-This keeps the current docs separate from the future app scaffold. If we scaffold immediately, use `localdictate/app` as the Tauri project root.
+This keeps the current docs separate from the future app scaffold. If we scaffold immediately, use `scribe/app` as the Tauri project root.
 
 ## 3. Architecture Outline
 
@@ -109,7 +109,7 @@ Goal: runnable desktop shell with state, tray, settings, and dashboard shell.
 
 Deliverables:
 
-- Tauri + React + TypeScript project in `localdictate/app`.
+- Tauri + React + TypeScript project in `scribe/app`.
 - Premium dark dashboard shell with sidebar.
 - Backend state machine with initial commands.
 - SQLite migrations for settings, transcripts, models, and daily stats.
@@ -193,7 +193,7 @@ Deliverables:
 - Download, progress, cancel, retry.
 - Delete and select default model.
 - Model status transitions.
-- Model storage under `%APPDATA%/LocalDictate/models/`.
+- Model storage under `%APPDATA%/Scribe/models/`.
 - Checksum verification where checksums are available.
 
 Exit criteria:
@@ -247,7 +247,7 @@ These are written as assignable briefs. Each agent should return code changes, t
 
 Scope:
 
-- Create `localdictate/app` Tauri v2 + React + TypeScript + Vite project.
+- Create `scribe/app` Tauri v2 + React + TypeScript + Vite project.
 - Add Tailwind and base dark theme tokens from the PRD.
 - Build dashboard layout with sidebar sections.
 - Add frontend route/view structure for Dashboard, Transcribe, History, Settings, Hotkeys, Models, Audio, About.
@@ -504,7 +504,7 @@ This slice proves the product promise before investing in full model management 
 
 ## 10. Immediate Next Actions
 
-1. Scaffold `localdictate/app` as Tauri v2 + React + TypeScript + Vite.
+1. Scaffold `scribe/app` as Tauri v2 + React + TypeScript + Vite.
 2. Create the Rust app state machine and SQLite migrations early.
 3. Run four focused spikes: hotkey hold/release, direct insert, audio WAV generation, whisper.cpp invocation.
 4. Implement the first vertical slice before widening the UI.

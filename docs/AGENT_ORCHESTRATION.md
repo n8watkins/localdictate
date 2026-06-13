@@ -1,4 +1,4 @@
-# LocalDictate - Agent Orchestration
+# Scribe - Agent Orchestration
 
 Status: Working assignment plan  
 Created: 2026-06-10  
@@ -11,7 +11,7 @@ Related docs:
 
 The project has:
 
-- Tauri v2 + React + TypeScript scaffold in `localdictate/app`.
+- Tauri v2 + React + TypeScript scaffold in `scribe/app`.
 - Frontend dashboard shell with sidebar navigation.
 - Views for Dashboard, Transcribe, History, Settings, Hotkeys, Models, Audio, and About.
 - `lucide-react` icons installed and used in navigation/actions.
@@ -21,7 +21,7 @@ The project has:
 Known baseline commands:
 
 ```bash
-cd /home/natkins/personal/tools/localdictate/app
+cd /home/natkins/personal/tools/scribe/app
 npm run build
 npm run tauri info
 cd src-tauri && cargo check
@@ -52,8 +52,8 @@ Create the Rust backend foundation: explicit app state machine, Last Transcript 
 ### Inputs
 
 - PRD sections 5, 8, 15, 16, and 18.
-- `localdictate/app/src-tauri/src/lib.rs`
-- `localdictate/app/src-tauri/tauri.conf.json`
+- `scribe/app/src-tauri/src/lib.rs`
+- `scribe/app/src-tauri/tauri.conf.json`
 
 ### Deliverables
 
@@ -92,7 +92,7 @@ Create the Rust backend foundation: explicit app state machine, Last Transcript 
 ### Acceptance
 
 ```bash
-cd localdictate/app/src-tauri
+cd scribe/app/src-tauri
 cargo check
 cargo test
 ```
@@ -109,8 +109,8 @@ Replace the current mock UI data with Tauri command calls and local loading/erro
 ### Inputs
 
 - Agent 1 command signatures.
-- `localdictate/app/src/App.tsx`
-- `localdictate/app/src/App.css`
+- `scribe/app/src/App.tsx`
+- `scribe/app/src/App.css`
 
 ### Deliverables
 
@@ -129,7 +129,7 @@ Replace the current mock UI data with Tauri command calls and local loading/erro
 ### Acceptance
 
 ```bash
-cd localdictate/app
+cd scribe/app
 npm run build
 ```
 
@@ -179,7 +179,7 @@ Implement system tray behavior and global hotkey registration/rebinding.
 ### Acceptance
 
 ```bash
-cd localdictate/app/src-tauri
+cd scribe/app/src-tauri
 cargo check
 ```
 
@@ -224,7 +224,7 @@ Implement microphone enumeration, test recording, recording lifecycle, level met
 ### Acceptance
 
 ```bash
-cd localdictate/app/src-tauri
+cd scribe/app/src-tauri
 cargo check
 cargo test
 ```
@@ -253,7 +253,7 @@ Implement local whisper.cpp transcription and in-app model management.
 ### Deliverables
 
 - Model catalog with recommended V1 models.
-- Model storage path under `%APPDATA%/LocalDictate/models/`.
+- Model storage path under `%APPDATA%/Scribe/models/`.
 - Download, progress, cancel, retry, delete, select.
 - Checksum verification when available.
 - whisper.cpp executable path/config.
@@ -271,7 +271,7 @@ Implement local whisper.cpp transcription and in-app model management.
 ### Acceptance
 
 ```bash
-cd localdictate/app/src-tauri
+cd scribe/app/src-tauri
 cargo check
 cargo test
 ```
@@ -363,7 +363,7 @@ Complete local transcript history, stats aggregation, and retention behavior.
 ### Acceptance
 
 ```bash
-cd localdictate/app/src-tauri
+cd scribe/app/src-tauri
 cargo test
 cd ..
 npm run build
@@ -406,7 +406,7 @@ Finish the floating pill, notifications, error states, tray icon variants, insta
 ### Acceptance
 
 ```bash
-cd localdictate/app
+cd scribe/app
 npm run build
 npm run tauri build
 ```

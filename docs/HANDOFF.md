@@ -5,11 +5,13 @@ Google Drive notes sync Phases 1–3 built + verified).
 Read this first, then **`docs/GOOGLE_INTEGRATION_PLAN.md`** (the Drive epic, all
 decisions locked), then `docs/STATUS_AND_NEXT_STEPS.md` for older history.
 
-> The app was renamed **LocalDictate → Scribe** this session. Older docs
-> (`PRD.md`, `IMPLEMENTATION_PLAN.md`, this file's predecessor) still say
-> "LocalDictate"; treat **Scribe / `com.natkins.scribe`** as the live identity.
-> The GitHub repo is still `n8watkins/localdictate` (not renamed) — its URLs in
-> the code are intentional.
+> The app was renamed **LocalDictate → Scribe** — brand, bundle id, GitHub repo
+> (`n8watkins/scribe`), and the WSL working directory all updated. Treat
+> **Scribe / `com.natkins.scribe`** as the live identity. The only intentional
+> `localdictate` leftovers are back-compat: the old data dir/bundle id
+> `com.natkins.localdictate` the migration reads, the `LOCALDICTATE_MODEL_DIR`
+> env fallback, and the `localdictate-updater.key` filename (validated by the
+> embedded pubkey, not its name).
 
 ## Project summary
 
@@ -21,9 +23,9 @@ this session: **Google Drive notes sync** — notes push to the user's own Drive
 as dated Markdown. The owner (Nathan) uses it daily on Windows 11; he's the only
 stakeholder and is usually AT the machine during sessions.
 
-- WSL repo (source of truth): `/home/natkins/n8builds/tools/localdictate`
-- Windows clone (build/test only): `C:\Users\natha\Projects\Tools\localdictate`
-- GitHub: `https://github.com/n8watkins/localdictate` (public; repo NOT renamed)
+- WSL repo (source of truth): `/home/natkins/n8builds/public/scribe`
+- Windows clone (build/test only): `C:\Users\natha\Projects\Tools\localdictate` (Windows dir not renamed)
+- GitHub: `https://github.com/n8watkins/scribe` (public)
 - **Installed app:** **Scribe** (`com.natkins.scribe`) at
   `C:\Users\natha\AppData\Local\Scribe\app.exe`, data in
   `%APPDATA%\com.natkins.scribe\`. Now version **0.3.0**, the owner's daily tool.
@@ -127,7 +129,7 @@ the owner's real machine/Drive.
 
 - **Windows verification is mandatory** for Rust (most code is `#[cfg(windows)]`).
   Sync the clone, then test:
-  `cd /mnt/c/Users/natha/Projects/Tools/localdictate && git checkout -- . && git fetch /home/natkins/n8builds/tools/localdictate main && git merge --ff-only FETCH_HEAD`
+  `cd /mnt/c/Users/natha/Projects/Tools/localdictate && git checkout -- . && git fetch /home/natkins/n8builds/public/scribe main && git merge --ff-only FETCH_HEAD`
   then `cd /mnt/c && cmd.exe /c "cd /d C:\Users\natha\Projects\Tools\localdictate\app\src-tauri && cargo test 2>&1"`.
   (The clone shows CRLF drift on `Cargo.toml`/`Cargo.lock` — `git checkout -- .`
   first.) Frontend (builds on Linux): `npx tsc --noEmit -p tsconfig.json && npm run build` in `app/`.

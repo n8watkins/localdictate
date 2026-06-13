@@ -1,4 +1,4 @@
-# LocalDictate — Google Drive Sync Plan (Gemini PINNED)
+# Scribe — Google Drive Sync Plan (Gemini PINNED)
 
 Status: PLANNED (not started). Written 2026-06-12, refined same day with owner
 decisions. Read `docs/HANDOFF.md` for current project state.
@@ -29,7 +29,7 @@ In ~1 day of heavy use: **477 transcripts**, 5 notes.
 ## Drive layout (owner-decided)
 
 ```
-LocalDictate Voice Notes/            (root app folder, scope drive.file)
+Scribe Voice Notes/            (root app folder, scope drive.file)
   2026-06/                           (one folder per MONTH, named YYYY-MM)
     2026-06-12.md                    (daily log — appended live on each save)
     2026-06-12-organized.md          (end-of-day LLM-reorganized version)
@@ -67,7 +67,7 @@ ties to the footprint discussion:
   **headless service** (Settings → Developer → "Enable Local LLM Service") so the
   server is up without the GUI; JIT-load + ~5 min TTL means the model only
   occupies VRAM during the pass, then unloads.
-- A scheduler inside LocalDictate (it's always-on in the tray): e.g. a daily
+- A scheduler inside Scribe (it's always-on in the tray): e.g. a daily
   timer at a configurable hour → run organize for that day; a weekly timer →
   weekly summary. Guard against firing mid-game (configurable hour, e.g. 3am, or
   "only when idle"). If the local server is down, skip + retry next tick.
